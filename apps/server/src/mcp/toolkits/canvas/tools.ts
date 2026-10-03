@@ -1,0 +1,87 @@
+/**
+ * Draw-out: the `canvas_*` tools. Each call changes the canvas of the thread
+ * that holds the MCP token, through a connected canvas host (a Draw-out window).
+ */
+import {
+  CanvasShowCodeResult,
+  McpCapabilityUnavailableError,
+  PositiveInt,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as Tool from "effect/unstable/ai/Tool";
+import * as Toolkit from "effect/unstable/ai/Toolkit";
+
+import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as CanvasHostBroker from "../../CanvasHostBroker.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  CanvasHostBroker.CanvasHostBroker,
+  ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+];
+
+export const CanvasShowCodeInput = Schema.Struct({
+  path: TrimmedNonEmptyString.annotate({
+    description:
+      "The file to show: a path relative to this thread's workspace, or an absolute path.",
+  }),
+  startLine: PositiveInt.annotate({ description: "First line to show, 1-based." }),
+  endLine: PositiveInt.annotate({
+    description: "Last line to show, 1-based and inclusive. Not before startLine.",
+  }),
+});
+export type CanvasShowCodeInput = typeof CanvasShowCodeInput.Type;
+
+export class CanvasRangeInvalidError extends Schema.TaggedError<CanvasRangeInvalidError>()(
+  "CanvasRangeInvalidError",
+  { startLine: Schema.Int, endLine: Schema.Int },
+) {
+  override get message(): string {
+    return `endLine ${this.endLine} is before startLine ${this.startLine}. Pass a range whose endLine is at or after its startLine.`;
+  }
+}
+
+export class CanvasThreadNotFoundError extends Schema.TaggedError<CanvasThreadNotFoundError>()(
+  "CanvasThreadNotFoundError",
+  { threadId: Schema.String },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} was not found, so a relative path has no workspace. Pass an absolute path.`;
+  }
+}
+
+export class CanvasThreadLookupError extends Schema.TaggedError<CanvasThreadLookupError>()(
+  "CanvasThreadLookupError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Could not read this thread's workspace. Pass an absolute path.";
+  }
+}
+
+export const CanvasToolError = Schema.Union([
+  McpCapabilityUnavailableError,
+  CanvasRangeInvalidError,
+  CanvasThreadNotFoundError,
+  CanvasThreadLookupError,
+  CanvasHostBroker.CanvasHostError,
+]);
+export type CanvasToolError = typeof CanvasToolError.Type;
+
+export const CanvasShowCodeTool = Tool.make("canvas_show_code", {
+  description:
+    "Show a range of code as a card on this thread's canvas in Draw-out, so the user sees the code you talk about. Use it when you read or explain code the user should look at. Returns the card id.",
+  parameters: CanvasShowCodeInput,
+  success: CanvasShowCodeResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Show code on the canvas")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool);

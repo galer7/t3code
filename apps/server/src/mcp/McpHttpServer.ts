@@ -31,6 +31,8 @@ import {
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
 import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handlers.ts";
+import { CanvasToolkitHandlersLive } from "./toolkits/canvas/handlers.ts";
+import { CanvasToolkit } from "./toolkits/canvas/tools.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import {
   DeviceScreenshotToolkitHandlersLive,
@@ -647,6 +649,11 @@ export const PullRequestsToolkitRegistrationLive = McpServer.toolkit(PullRequest
   Layer.provide(PullRequestsToolkitHandlersLive),
 );
 
+// Draw-out: the canvas tools.
+export const CanvasToolkitRegistrationLive = McpServer.toolkit(CanvasToolkit).pipe(
+  Layer.provide(CanvasToolkitHandlersLive),
+);
+
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
   Layer.provide(DeviceStandardToolkitHandlersLive),
 );
@@ -660,7 +667,7 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
-const McpTransportLive = McpServer.layerHttp({
+export const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
   path: "/mcp",
@@ -671,4 +678,5 @@ export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
+  CanvasToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

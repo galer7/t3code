@@ -9540,6 +9540,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         };
         assert.equal(connected.values[0]?.type, "connected");
         assert.equal(typeof connected.values[0]?.connectionId, "string");
+
+        // canvasHost.ts: an answer. The server ignores an answer to a request it never sent,
+        // but it must accept the message's shape.
+        request("9", "canvasHost.respond", {
+          clientId: "window-1",
+          connectionId: connected.values[0]?.connectionId,
+          requestId: "canvas-0",
+          ok: true,
+          result: { cardId: "card-1" },
+        });
+        assert.deepEqual(yield* exit("9"), {
+          _tag: "Exit",
+          requestId: "9",
+          exit: { _tag: "Success", value: null },
+        });
       }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -38,10 +38,19 @@ export class CanvasHostUnavailableError extends Schema.TaggedError<CanvasHostUna
 
 export class CanvasHostTimeoutError extends Schema.TaggedError<CanvasHostTimeoutError>()(
   "CanvasHostTimeoutError",
-  { threadId: Schema.String, requestId: Schema.String, timeoutMs: Schema.Int },
+  {
+    threadId: Schema.String,
+    requestId: Schema.String,
+    timeoutMs: Schema.Int,
+    /** Another host of the environment is still connected, so a retry reaches it. */
+    hostsRemain: Schema.Boolean,
+  },
 ) {
   override get message(): string {
-    return `The Draw-out window did not answer within ${this.timeoutMs}ms and was disconnected. Do not retry until the user reopens Draw-out.`;
+    const dropped = `The Draw-out window did not answer within ${this.timeoutMs}ms and was disconnected.`;
+    return this.hostsRemain
+      ? `${dropped} Another Draw-out window is connected: retry once.`
+      : `${dropped} No other Draw-out window is connected, so do not retry. Describe the code in text, or ask the user to open Draw-out.`;
   }
 }
 
@@ -276,10 +285,14 @@ export const make = Effect.gen(function* () {
       if (Option.isSome(answer)) return answer.value;
       // A host that does not answer is dropped; the request is not replayed.
       yield* disconnect(route.host.clientId, route.host.queue, "end");
+      const { hosts } = yield* SynchronizedRef.get(state);
       return yield* new CanvasHostTimeoutError({
         threadId: scope.threadId,
         requestId: route.requestId,
         timeoutMs,
+        hostsRemain: Array.from(hosts.values()).some(
+          (host) => host.environmentId === scope.environmentId,
+        ),
       });
     },
   );

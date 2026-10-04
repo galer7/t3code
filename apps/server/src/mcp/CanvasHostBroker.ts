@@ -154,16 +154,17 @@ export const make = Effect.gen(function* () {
   /**
    * `end` completes the host's stream so a host that timed out can connect
    * again; `shutdown` is for a generation that a newer connection replaced.
+   * Returns the hosts that remain.
    */
   const disconnect = (clientId: string, queue: HostQueue, close: "end" | "shutdown") =>
     SynchronizedRef.modifyEffect(state, (current) => {
       if (current.hosts.get(clientId)?.queue !== queue) {
-        return Effect.succeed([undefined, current] as const);
+        return Effect.succeed([current.hosts, current] as const);
       }
       const removed = removeHost(current, clientId, queue);
       return (close === "end" ? Queue.end(queue) : Queue.shutdown(queue)).pipe(
         Effect.andThen(failOrphaned(removed.orphaned)),
-        Effect.as([undefined, removed.state] as const),
+        Effect.as([removed.state.hosts, removed.state] as const),
       );
     });
 
@@ -284,8 +285,7 @@ export const make = Effect.gen(function* () {
       );
       if (Option.isSome(answer)) return answer.value;
       // A host that does not answer is dropped; the request is not replayed.
-      yield* disconnect(route.host.clientId, route.host.queue, "end");
-      const { hosts } = yield* SynchronizedRef.get(state);
+      const hosts = yield* disconnect(route.host.clientId, route.host.queue, "end");
       return yield* new CanvasHostTimeoutError({
         threadId: scope.threadId,
         requestId: route.requestId,

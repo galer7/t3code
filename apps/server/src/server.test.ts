@@ -61,6 +61,7 @@ import * as Config from "effect/Config";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -1290,6 +1291,62 @@ const wsRpcProtocolLayer = (wsUrl: string, onMessage?: (message: string) => void
     Layer.provide(RpcSerialization.layerJson),
   );
 };
+
+/**
+ * Draw-out: a WebSocket that sends and receives raw Effect RPC JSON, as the draw-out
+ * extension does. `next` takes the first received message that matches.
+ */
+const openRawRpcSocket = (url: string) =>
+  Effect.acquireRelease(
+    Effect.callback<
+      {
+        readonly send: (message: unknown) => void;
+        readonly next: (
+          match: (message: Record<string, unknown>) => boolean,
+        ) => Effect.Effect<Record<string, unknown>, Cause.TimeoutError>;
+        readonly close: () => void;
+      },
+      Error
+    >((resume) => {
+      const socket = new NodeSocket.NodeWS.WebSocket(url);
+      const received: Array<Record<string, unknown>> = [];
+      const listeners = new Set<() => void>();
+      socket.on("message", (data) => {
+        const parsed: unknown = JSON.parse(String(data));
+        received.push(
+          ...((Array.isArray(parsed) ? parsed : [parsed]) as Array<Record<string, unknown>>),
+        );
+        listeners.forEach((listener) => listener());
+      });
+      const take = (match: (message: Record<string, unknown>) => boolean) => {
+        const index = received.findIndex(match);
+        return index === -1 ? undefined : received.splice(index, 1)[0];
+      };
+      socket.on("open", () =>
+        resume(
+          Effect.succeed({
+            send: (message) => socket.send(JSON.stringify(message)),
+            next: (match) =>
+              Effect.callback<Record<string, unknown>>((resumeNext) => {
+                const check = () => {
+                  const message = take(match);
+                  if (message) {
+                    listeners.delete(check);
+                    resumeNext(Effect.succeed(message));
+                  }
+                };
+                listeners.add(check);
+                check();
+                return Effect.sync(() => listeners.delete(check));
+              }).pipe(Effect.timeout("5 seconds")),
+            close: () => socket.close(),
+          }),
+        ),
+      );
+      socket.on("error", (error) => resume(Effect.fail(error)));
+    }),
+    (wire) => Effect.sync(() => wire.close()),
+  );
 
 const makeWsRpcClient = RpcClient.make(WsRpcGroup);
 type WsRpcClient =
@@ -9213,6 +9270,277 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.deepEqual(items[1], { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  // Draw-out: the draw-out extension (galer7/draw-out, extensions/draw-out/src) speaks these
+  // RPCs as hand-written JSON over /ws instead of the T3 client runtime. This test sends its
+  // exact messages, tags included, so a change to the contracts or the wire format fails here,
+  // not in Draw-out.
+  it.effect(
+    "Draw-out: serves the draw-out extension's chat and canvas host messages as raw JSON",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const folder = yield* fs.makeTempDirectoryScoped({ prefix: "t3-draw-out-chat-" });
+        const readModel = makeDefaultOrchestrationReadModel();
+        const thread = readModel.threads[0]!;
+        const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+        const dispatched: Array<{ readonly type: string }> = [];
+        const at = "2026-10-04T12:00:00.000Z";
+        const reply = {
+          sequence: 2,
+          eventId: EventId.make("event-draw-out-reply"),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: at,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make("m-2"),
+            role: "assistant",
+            text: "It is in ",
+            turnId: null,
+            streaming: true,
+            createdAt: at,
+            updatedAt: at,
+          },
+        } satisfies OrchestrationEvent;
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
+              streamDomainEvents: Stream.fromPubSub(liveEvents),
+              // A thread stream that resumes after sequence 1 replays the reply.
+              latestSequence: Effect.succeed(2),
+              getThreadReplayStats: () =>
+                Effect.succeed({ eventCount: 1, payloadBytes: 512, hasCreateEvent: false }),
+              readThreadEvents: () => Stream.make(reply),
+            },
+            projectionSnapshotQuery: {
+              getShellSnapshot: () =>
+                Effect.succeed({
+                  snapshotSequence: 1,
+                  projects: [{ ...readModel.projects[0]!, deletedAt: undefined }],
+                  threads: [makeDefaultOrchestrationThreadShell()],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                }),
+              getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 1, thread }),
+            },
+          },
+        });
+
+        // Connects as the extension does: the environment, a bearer token, then a WebSocket ticket.
+        const environment = yield* responseJsonEffect<{ readonly environmentId: string }>(
+          yield* fetchEffect(yield* getHttpServerUrl("/.well-known/t3/environment")),
+        );
+        const ticket = yield* responseJsonEffect<{ readonly ticket: string }>(
+          yield* fetchEffect(yield* getHttpServerUrl("/api/auth/websocket-ticket"), {
+            method: "POST",
+            headers: { authorization: `Bearer ${yield* getAuthenticatedBearerSessionToken()}` },
+          }),
+        );
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+        const wire = yield* openRawRpcSocket(wsUrl);
+        const request = (id: string, tag: string, payload: unknown) =>
+          wire.send({ _tag: "Request", id, tag, payload, headers: [] });
+        const chunk = (id: string) =>
+          wire.next((message) => message._tag === "Chunk" && message.requestId === id);
+        const exit = (id: string) =>
+          wire.next((message) => message._tag === "Exit" && message.requestId === id);
+
+        // chatClient.ts: the shell stream lists the projects and threads.
+        request("1", "orchestration.subscribeShell", {});
+        const shell = (yield* chunk("1")) as {
+          readonly values: ReadonlyArray<{
+            readonly kind: string;
+            readonly snapshot: {
+              readonly projects: ReadonlyArray<Record<string, unknown>>;
+              readonly threads: ReadonlyArray<Record<string, unknown>>;
+            };
+          }>;
+        };
+        wire.send({ _tag: "Ack", requestId: "1" });
+        assert.equal(shell.values[0]?.kind, "snapshot");
+        assert.deepEqual(
+          {
+            id: shell.values[0]?.snapshot.projects[0]?.id,
+            root: shell.values[0]?.snapshot.projects[0]?.workspaceRoot,
+          },
+          { id: defaultProjectId, root: "/tmp/default-project" },
+        );
+        const threadShell = shell.values[0]?.snapshot.threads[0];
+        assert.deepEqual(
+          {
+            id: threadShell?.id,
+            projectId: threadShell?.projectId,
+            title: typeof threadShell?.title,
+            updatedAt: typeof threadShell?.updatedAt,
+          },
+          {
+            id: defaultThreadId,
+            projectId: defaultProjectId,
+            title: "string",
+            updatedAt: "string",
+          },
+        );
+
+        // chatClient.ts: new project, new thread, a message, an interrupt.
+        const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+        const commands = [
+          {
+            type: "project.create",
+            commandId: "c-1",
+            projectId: "p-1",
+            title: "repo",
+            workspaceRoot: folder,
+            createdAt: at,
+          },
+          {
+            type: "thread.create",
+            commandId: "c-2",
+            threadId: "t-1",
+            projectId: "p-1",
+            title: "Where is the handler?",
+            modelSelection: model,
+            runtimeMode: "auto",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: at,
+          },
+          {
+            type: "thread.turn.start",
+            commandId: "c-3",
+            threadId: "t-1",
+            message: {
+              messageId: "m-1",
+              role: "user",
+              text: "Where is the handler?",
+              attachments: [],
+            },
+            modelSelection: model,
+            runtimeMode: "auto",
+            interactionMode: "default",
+            createdAt: at,
+          },
+          { type: "thread.turn.interrupt", commandId: "c-4", threadId: "t-1", createdAt: at },
+        ];
+        for (const [index, command] of commands.entries()) {
+          const id = String(index + 2);
+          request(id, "orchestration.dispatchCommand", command);
+          assert.deepEqual(yield* exit(id), {
+            _tag: "Exit",
+            requestId: id,
+            exit: { _tag: "Success", value: { sequence: index + 1 } },
+          });
+        }
+        assert.deepEqual(
+          dispatched.map((command) => command.type),
+          commands.map((command) => command.type),
+        );
+
+        // chatClient.ts: a thread's stream, a snapshot, then events.
+        request("6", "orchestration.subscribeThread", {
+          threadId: defaultThreadId,
+          reasoningMessages: true,
+        });
+        const snapshot = (yield* chunk("6")) as {
+          readonly values: ReadonlyArray<{
+            readonly kind: string;
+            readonly snapshot: {
+              readonly snapshotSequence: number;
+              readonly thread: Record<string, unknown>;
+            };
+          }>;
+        };
+        wire.send({ _tag: "Ack", requestId: "6" });
+        const detail = snapshot.values[0]?.snapshot.thread;
+        assert.equal(snapshot.values[0]?.kind, "snapshot");
+        assert.equal(snapshot.values[0]?.snapshot.snapshotSequence, 1);
+        assert.deepEqual(
+          [
+            typeof detail?.title,
+            Array.isArray(detail?.messages),
+            Array.isArray(detail?.activities),
+            "session" in (detail ?? {}),
+          ],
+          ["string", true, true, true],
+        );
+        yield* PubSub.publish(liveEvents, reply);
+        const event = (yield* chunk("6")) as {
+          readonly values: ReadonlyArray<{
+            readonly kind: string;
+            readonly event: Record<string, unknown>;
+          }>;
+        };
+        wire.send({ _tag: "Ack", requestId: "6" });
+        assert.deepEqual(
+          {
+            kind: event.values[0]?.kind,
+            sequence: event.values[0]?.event.sequence,
+            type: event.values[0]?.event.type,
+            payload: event.values[0]?.event.payload,
+          },
+          {
+            kind: "event",
+            sequence: 2,
+            type: "thread.message-sent",
+            payload: {
+              threadId: defaultThreadId,
+              messageId: "m-2",
+              role: "assistant",
+              text: "It is in ",
+              turnId: null,
+              streaming: true,
+              createdAt: at,
+              updatedAt: at,
+            },
+          },
+        );
+
+        // rpc.ts: cancelling a stream.
+        wire.send({ _tag: "Interrupt", requestId: "6" });
+        const interrupted = (yield* exit("6")) as { readonly exit: { readonly _tag: string } };
+        assert.equal(interrupted.exit._tag, "Failure");
+
+        // chatClient.ts: a thread's stream that resumes after the last event it holds.
+        request("8", "orchestration.subscribeThread", {
+          threadId: defaultThreadId,
+          reasoningMessages: true,
+          afterSequence: 1,
+        });
+        const resumed = (yield* chunk("8")) as {
+          readonly values: ReadonlyArray<{
+            readonly kind: string;
+            readonly event?: Record<string, unknown>;
+          }>;
+        };
+        wire.send({ _tag: "Ack", requestId: "8" });
+        assert.deepEqual(
+          resumed.values.map((value) => [value.kind, value.event?.sequence]),
+          [["event", 2]],
+        );
+        wire.send({ _tag: "Interrupt", requestId: "8" });
+
+        // canvasHost.ts: this window as a canvas host.
+        request("7", "canvasHost.connect", {
+          clientId: "window-1",
+          environmentId: environment.environmentId,
+        });
+        const connected = (yield* chunk("7")) as {
+          readonly values: ReadonlyArray<{ readonly type: string; readonly connectionId: unknown }>;
+        };
+        assert.equal(connected.values[0]?.type, "connected");
+        assert.equal(typeof connected.values[0]?.connectionId, "string");
+      }).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("buffers shell events published while the fallback snapshot loads", () =>

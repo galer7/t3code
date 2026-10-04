@@ -9286,6 +9286,29 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const thread = readModel.threads[0]!;
         const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
         const dispatched: Array<{ readonly type: string }> = [];
+        const at = "2026-10-04T12:00:00.000Z";
+        const reply = {
+          sequence: 2,
+          eventId: EventId.make("event-draw-out-reply"),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: at,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make("m-2"),
+            role: "assistant",
+            text: "It is in ",
+            turnId: null,
+            streaming: true,
+            createdAt: at,
+            updatedAt: at,
+          },
+        } satisfies OrchestrationEvent;
         yield* buildAppUnderTest({
           layers: {
             orchestrationEngine: {
@@ -9295,6 +9318,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   return { sequence: dispatched.length };
                 }),
               streamDomainEvents: Stream.fromPubSub(liveEvents),
+              // A thread stream that resumes after sequence 1 replays the reply.
+              latestSequence: Effect.succeed(2),
+              getThreadReplayStats: () =>
+                Effect.succeed({ eventCount: 1, payloadBytes: 512, hasCreateEvent: false }),
+              readThreadEvents: () => Stream.make(reply),
             },
             projectionSnapshotQuery: {
               getShellSnapshot: () =>
@@ -9365,7 +9393,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         );
 
         // chatClient.ts: new project, new thread, a message, an interrupt.
-        const at = "2026-10-04T12:00:00.000Z";
         const model = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
         const commands = [
           {
@@ -9447,28 +9474,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           ],
           ["string", true, true, true],
         );
-        yield* PubSub.publish(liveEvents, {
-          sequence: 2,
-          eventId: EventId.make("event-draw-out-reply"),
-          aggregateKind: "thread",
-          aggregateId: defaultThreadId,
-          occurredAt: at,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          type: "thread.message-sent",
-          payload: {
-            threadId: defaultThreadId,
-            messageId: MessageId.make("m-2"),
-            role: "assistant",
-            text: "It is in ",
-            turnId: null,
-            streaming: true,
-            createdAt: at,
-            updatedAt: at,
-          },
-        });
+        yield* PubSub.publish(liveEvents, reply);
         const event = (yield* chunk("6")) as {
           readonly values: ReadonlyArray<{
             readonly kind: string;
@@ -9504,6 +9510,25 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         wire.send({ _tag: "Interrupt", requestId: "6" });
         const interrupted = (yield* exit("6")) as { readonly exit: { readonly _tag: string } };
         assert.equal(interrupted.exit._tag, "Failure");
+
+        // chatClient.ts: a thread's stream that resumes after the last event it holds.
+        request("8", "orchestration.subscribeThread", {
+          threadId: defaultThreadId,
+          reasoningMessages: true,
+          afterSequence: 1,
+        });
+        const resumed = (yield* chunk("8")) as {
+          readonly values: ReadonlyArray<{
+            readonly kind: string;
+            readonly event?: Record<string, unknown>;
+          }>;
+        };
+        wire.send({ _tag: "Ack", requestId: "8" });
+        assert.deepEqual(
+          resumed.values.map((value) => [value.kind, value.event?.sequence]),
+          [["event", 2]],
+        );
+        wire.send({ _tag: "Interrupt", requestId: "8" });
 
         // canvasHost.ts: this window as a canvas host.
         request("7", "canvasHost.connect", {

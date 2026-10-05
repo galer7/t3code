@@ -38,7 +38,7 @@ const make = Effect.gen(function* () {
   });
 
   return CanvasToolkit.of({
-    canvas_show_code: ({ path, startLine, endLine }) =>
+    canvas_show_code: ({ path, startLine, endLine, lane }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         if (endLine < startLine) {
@@ -59,7 +59,13 @@ const make = Effect.gen(function* () {
             );
         const result = yield* broker.invoke({
           scope,
-          command: { type: "showCode", path: absolutePath, startLine, endLine },
+          command: {
+            type: "showCode",
+            path: absolutePath,
+            startLine,
+            endLine,
+            ...(lane === undefined ? {} : { lane }),
+          },
         });
         if (!isShowCodeResult(result)) {
           return yield* new CanvasHostBroker.CanvasHostRejectedError({

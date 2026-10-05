@@ -10,6 +10,13 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("call list_thread_pull_requests and link any PR");
   });
 
+  // Draw-out: the agent answers with the code itself, as cards on the thread's canvas.
+  it("tells the agent to show the code it explains as canvas cards, in execution order", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Claude Code" });
+    expect(instructions).toContain("call canvas_show_code once per range, before you reply");
+    expect(instructions).toContain("in the order the code runs");
+  });
+
   it("keeps known model and effort metadata on one line", () => {
     expect(
       buildRuntimeInstructions({

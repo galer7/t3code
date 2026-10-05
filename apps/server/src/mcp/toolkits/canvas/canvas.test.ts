@@ -226,6 +226,35 @@ it.effect("shows code as one card on the calling thread's canvas and returns its
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("sends the lane the agent gives, and refuses a lane that does not exist", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const host = yield* connectFakeCanvasHost(environmentId);
+      const token = yield* issueToken(threadA);
+
+      yield* callTool(token, "canvas_show_code", {
+        path: "src/integrations/zoom.ts",
+        startLine: 1,
+        endLine: 9,
+        lane: "external",
+      });
+      const unknown = yield* callTool(token, "canvas_show_code", {
+        path: "src/orders/cancel.ts",
+        startLine: 1,
+        endLine: 9,
+        lane: "database",
+      });
+
+      expect({
+        lanes: host.requests.map((request) => request.command.lane),
+        // The input schema refuses it: a JSON-RPC error, so there is no tool result.
+        unknownRefused: unknown === undefined || unknown.isError === true,
+      }).toEqual({ lanes: ["external"], unknownRefused: true });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("keeps an absolute path as it is", () =>
   Effect.scoped(
     Effect.gen(function* () {

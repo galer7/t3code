@@ -25,12 +25,18 @@ export const CanvasHost = Schema.Struct({
 });
 export type CanvasHost = typeof CanvasHost.Type;
 
+/** The lanes of a canvas, left to right. External services are always last. */
+export const CanvasLane = Schema.Literals(["frontend", "backend", "infra", "external"]);
+export type CanvasLane = typeof CanvasLane.Type;
+
 /** Show lines `startLine`..`endLine` (1-based, inclusive) of an absolute file path as a card. */
 export const CanvasShowCodeCommand = Schema.Struct({
   type: Schema.Literal("showCode"),
   path: TrimmedNonEmptyString,
   startLine: PositiveInt,
   endLine: PositiveInt,
+  /** Draw-out puts a card with no lane in the backend lane. */
+  lane: Schema.optional(CanvasLane),
 });
 export type CanvasShowCodeCommand = typeof CanvasShowCodeCommand.Type;
 

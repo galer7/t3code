@@ -3,6 +3,7 @@
  * that holds the MCP token, through a connected canvas host (a Draw-out window).
  */
 import {
+  CanvasLane,
   CanvasShowCodeResult,
   McpCapabilityUnavailableError,
   PositiveInt,
@@ -31,6 +32,12 @@ export const CanvasShowCodeInput = Schema.Struct({
   endLine: PositiveInt.annotate({
     description: "Last line to show, 1-based and inclusive. Not before startLine.",
   }),
+  lane: Schema.optional(
+    CanvasLane.annotate({
+      description:
+        "The layer the code belongs to; the canvas shows lanes left to right: frontend, backend, infra, then external (a third-party service such as Zoom or Stripe, or the code that calls it). Default: backend.",
+    }),
+  ),
 });
 export type CanvasShowCodeInput = typeof CanvasShowCodeInput.Type;
 

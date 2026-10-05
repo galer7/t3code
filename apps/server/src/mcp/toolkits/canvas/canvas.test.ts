@@ -174,6 +174,16 @@ const connectFakeCanvasHost = (
         const { request } = event;
         requests.push(request);
         if (!answers) return Deferred.succeed(received, undefined);
+        if (request.command.type === "suggestLayout") {
+          // As Draw-out answers: here no card is pinned, so every card moves.
+          return client[WS_METHODS.canvasHostRespond]({
+            clientId,
+            connectionId: event.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: { moved: request.command.cards.length, waiting: 0 },
+          });
+        }
         const cards = canvases.get(request.threadId) ?? [];
         const card = {
           cardId: `card-${cards.length + 1}`,
@@ -247,10 +257,45 @@ it.effect("sends the lane the agent gives, and refuses a lane that does not exis
       });
 
       expect({
-        lanes: host.requests.map((request) => request.command.lane),
+        lanes: host.requests.map((request) =>
+          request.command.type === "showCode" ? request.command.lane : undefined,
+        ),
         // The input schema refuses it: a JSON-RPC error, so there is no tool result.
         unknownRefused: unknown === undefined || unknown.isError === true,
       }).toEqual({ lanes: ["external"], unknownRefused: true });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("sends a suggested layout to the canvas host and returns what moved and what waits", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const host = yield* connectFakeCanvasHost(environmentId);
+      const token = yield* issueToken(threadA);
+
+      const result = yield* callTool(token, "canvas_suggest_layout", {
+        cards: [
+          { cardId: "card-2", lane: "frontend" },
+          { cardId: "card-1", lane: "backend" },
+        ],
+      });
+
+      expect({
+        commands: host.requests.map((request) => request.command),
+        result: result.structuredContent,
+      }).toEqual({
+        commands: [
+          {
+            type: "suggestLayout",
+            cards: [
+              { cardId: "card-2", lane: "frontend" },
+              { cardId: "card-1", lane: "backend" },
+            ],
+          },
+        ],
+        result: { moved: 2, waiting: 0 },
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

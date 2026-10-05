@@ -1,4 +1,4 @@
-import { CanvasShowCodeResult } from "@t3tools/contracts";
+import { CanvasShowCodeResult, CanvasSuggestLayoutResult } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -15,6 +15,7 @@ import {
 } from "./tools.ts";
 
 const isShowCodeResult = Schema.is(CanvasShowCodeResult);
+const isSuggestLayoutResult = Schema.is(CanvasSuggestLayoutResult);
 
 const make = Effect.gen(function* () {
   const broker = yield* CanvasHostBroker.CanvasHostBroker;
@@ -75,6 +76,19 @@ const make = Effect.gen(function* () {
           });
         }
         return { cardId: result.cardId };
+      }),
+    canvas_suggest_layout: ({ cards }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
+        const result = yield* broker.invoke({ scope, command: { type: "suggestLayout", cards } });
+        if (!isSuggestLayoutResult(result)) {
+          return yield* new CanvasHostBroker.CanvasHostRejectedError({
+            threadId: scope.threadId,
+            requestId: "unknown",
+            reason: "the Draw-out window answered without the cards it moved.",
+          });
+        }
+        return result;
       }),
   });
 });

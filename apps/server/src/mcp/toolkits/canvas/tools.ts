@@ -3,8 +3,10 @@
  * that holds the MCP token, through a connected canvas host (a Draw-out window).
  */
 import {
+  CanvasCardId,
   CanvasLane,
   CanvasShowCodeResult,
+  CanvasSuggestLayoutResult,
   McpCapabilityUnavailableError,
   PositiveInt,
   TrimmedNonEmptyString,
@@ -91,4 +93,33 @@ export const CanvasShowCodeTool = Tool.make("canvas_show_code", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool);
+export const CanvasSuggestLayoutInput = Schema.Struct({
+  cards: Schema.Array(
+    Schema.Struct({
+      cardId: CanvasCardId.annotate({ description: "A card id that canvas_show_code returned." }),
+      lane: CanvasLane,
+    }),
+  )
+    .check(Schema.isMinLength(1))
+    .annotate({
+      description:
+        "Cards in the order the code runs. Each goes to its lane, in this order within the lane; cards you leave out keep their place after them.",
+    }),
+});
+export type CanvasSuggestLayoutInput = typeof CanvasSuggestLayoutInput.Type;
+
+export const CanvasSuggestLayoutTool = Tool.make("canvas_suggest_layout", {
+  description:
+    "Rearrange cards on this thread's canvas in Draw-out: put each card in its lane, in execution order. Cards the user dragged stay where they are until the user accepts your layout. Returns how many cards moved and how many wait for the user.",
+  parameters: CanvasSuggestLayoutInput,
+  success: CanvasSuggestLayoutResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Suggest a canvas layout")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool, CanvasSuggestLayoutTool);

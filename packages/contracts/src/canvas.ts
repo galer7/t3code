@@ -40,7 +40,27 @@ export const CanvasShowCodeCommand = Schema.Struct({
 });
 export type CanvasShowCodeCommand = typeof CanvasShowCodeCommand.Type;
 
-export const CanvasCommand = Schema.Union([CanvasShowCodeCommand]);
+/**
+ * Move cards to lanes, in this order within each lane. Draw-out moves the
+ * unpinned cards now; the cards Gabriel pinned move only when he accepts.
+ */
+export const CanvasSuggestLayoutCommand = Schema.Struct({
+  type: Schema.Literal("suggestLayout"),
+  cards: Schema.Array(Schema.Struct({ cardId: CanvasCardId, lane: CanvasLane })).check(
+    Schema.isMinLength(1),
+  ),
+});
+export type CanvasSuggestLayoutCommand = typeof CanvasSuggestLayoutCommand.Type;
+
+export const CanvasSuggestLayoutResult = Schema.Struct({
+  /** Unpinned cards that moved. */
+  moved: Schema.Int,
+  /** Pinned cards that wait for Gabriel to accept the layout. */
+  waiting: Schema.Int,
+});
+export type CanvasSuggestLayoutResult = typeof CanvasSuggestLayoutResult.Type;
+
+export const CanvasCommand = Schema.Union([CanvasShowCodeCommand, CanvasSuggestLayoutCommand]);
 export type CanvasCommand = typeof CanvasCommand.Type;
 
 export const CanvasShowCodeResult = Schema.Struct({

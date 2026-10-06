@@ -56,3 +56,6 @@
 .drawout-map-tile .drawout-step-range {
   background: color-mix(in oklab, var(--lane) 10%, transparent);
 }
+.drawout-map-divider:hover {
+  background: color-mix(in oklab, var(--primary) 45%, transparent);
+}

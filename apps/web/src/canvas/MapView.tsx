@@ -1,22 +1,15 @@
 /**
  * Draw-out: the map of a thread's trace. Each card is an editor squeezed to
- * its range, packed edge to edge on a map you scroll, drag and zoom. The
- * packed editors reflow with the zoom. Drag a title to put an editor where you
- * want it, or drag its edges to resize it: it then stays put, and the rest
- * pack around it. A click raises an editor over the map with the whole file
- * and the language server; Esc puts it back.
+ * its range, in columns that fill the pane with no space between editors.
+ * Until you move something, the map picks the columns: zoom out and more
+ * columns fit. Drag a title to drop an editor into a column or between two
+ * as a new one; drag a divider to resize. A click raises an editor over the
+ * map with the whole file and the language server; Esc puts it back.
  */
 import "./canvas.css";
 
 import type { CanvasCardRecord, EnvironmentId, ThreadCanvasState } from "@t3tools/contracts";
-import {
-  FootprintsIcon,
-  MinusIcon,
-  PinIcon,
-  PlusIcon,
-  RotateCcwIcon,
-  ScanIcon,
-} from "lucide-react";
+import { FootprintsIcon, LayoutDashboardIcon, MinusIcon, PlusIcon, ScanIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
@@ -24,14 +17,23 @@ import { cn } from "~/lib/utils";
 
 import { LANE_STYLES } from "./laneStyles";
 import { readServerFile } from "./lsp";
-import { layoutMap, type MapItem, type MapRect, snapRect } from "./mapLayout";
+import {
+  applyDrop,
+  autoColumns,
+  dropAt,
+  layoutColumns,
+  type MapDrop,
+  type MapItem,
+  type MapLayout,
+} from "./mapLayout";
 import { CODE_LINE_HEIGHT, DARK_THEME, LIGHT_THEME, modelFor, monaco } from "./monaco";
 import { useProjectPath } from "./projectPath";
 import { LspChip, type SideStep, setSideStepHandler, StepEditor } from "./TraceView";
 
-const DEFAULT_WIDTH = 640;
-const MIN_WIDTH = 280;
-const MIN_LINES = 3;
+/** The narrowest column the map picks for itself. */
+const AUTO_COLUMN_WIDTH = 560;
+const MIN_COLUMN_WIDTH = 220;
+const MIN_LINES = 2;
 const HEADER_HEIGHT = 34;
 const CAPTION_HEIGHT = 30;
 const EDITOR_PAD = 6;
@@ -40,25 +42,29 @@ const TILE_BORDER = 2;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2;
 const ZOOM_KEY = "draw-out:map-zoom";
-/** How close, in screen pixels, an edge must come to snap. */
-const SNAP_REACH = 14;
+/** How close, in screen pixels, the pointer must come to a column's side to open a new column. */
+const NEW_COLUMN_REACH = 56;
 
 interface MapPrefs {
-  /** Where the user put an editor. */
-  readonly pins: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
-  readonly sizes: Readonly<Record<string, { readonly width?: number; readonly lines?: number }>>;
+  /** The user's columns; null while the map picks them. */
+  readonly columns: readonly (readonly string[])[] | null;
+  readonly weights: readonly number[];
+  /** Editor heights the user set, before stretching. */
+  readonly heights: Readonly<Record<string, number>>;
 }
+
+const AUTO: MapPrefs = { columns: null, weights: [], heights: {} };
 
 const prefsKey = (threadId: string) => `draw-out:map:${threadId}`;
 
 function readPrefs(threadId: string): MapPrefs {
   try {
     const value = JSON.parse(localStorage.getItem(prefsKey(threadId)) ?? "null");
-    if (value && typeof value.pins === "object") return value as MapPrefs;
+    if (value && "columns" in value && typeof value.heights === "object") return value as MapPrefs;
   } catch {
     // A bad entry starts the map fresh.
   }
-  return { pins: {}, sizes: {} };
+  return AUTO;
 }
 
 const rangeLines = (card: CanvasCardRecord) => card.endLine - card.startLine + 1;
@@ -70,12 +76,11 @@ function headerHeight(card: CanvasCardRecord): number {
   return HEADER_HEIGHT + (card.caption ? CAPTION_HEIGHT : 0);
 }
 
+const chromeHeight = (card: CanvasCardRecord) => headerHeight(card) + 2 * EDITOR_PAD + TILE_BORDER;
+
 /** The code lines a tile of `height` shows. */
 const linesIn = (card: CanvasCardRecord, height: number) =>
-  Math.max(
-    1,
-    Math.floor((height - headerHeight(card) - 2 * EDITOR_PAD - TILE_BORDER) / CODE_LINE_HEIGHT),
-  );
+  Math.max(1, Math.floor((height - chromeHeight(card)) / CODE_LINE_HEIGHT));
 
 const loading = new Map<string, Promise<monaco.editor.ITextModel | null>>();
 
@@ -98,7 +103,12 @@ function loadModel(
   return pending;
 }
 
-type Drag = { readonly id: string; readonly x: number; readonly y: number };
+interface Drag {
+  readonly id: string;
+  readonly x: number;
+  readonly y: number;
+  readonly drop: MapDrop;
+}
 
 export function MapView(props: {
   readonly environmentId: EnvironmentId;
@@ -117,7 +127,7 @@ export function MapView(props: {
   const [selected, setSelected] = useState<string | null>(null);
   const [raised, setRaised] = useState<string | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
-  const [resizing, setResizing] = useState<string | null>(null);
+  const [resizing, setResizing] = useState(false);
 
   useEffect(
     () => localStorage.setItem(prefsKey(threadId), JSON.stringify(prefs)),
@@ -139,34 +149,51 @@ export function MapView(props: {
     () => new Map(canvas.cards.map((card) => [card.id, card])),
     [canvas.cards],
   );
-  const order = useMemo(() => canvas.cards.map((card) => card.id), [canvas.cards]);
-
-  const linesOf = useCallback(
-    (card: CanvasCardRecord) => prefs.sizes[card.id]?.lines ?? rangeLines(card),
-    [prefs.sizes],
-  );
-  const items = useMemo<MapItem[]>(
+  const heights = useMemo(
     () =>
-      order.flatMap((id) => {
-        const card = cardsById.get(id);
-        if (!card) return [];
-        return [
-          {
-            id,
-            pinned: prefs.pins[id],
-            width: prefs.sizes[id]?.width ?? DEFAULT_WIDTH,
-            height:
-              headerHeight(card) + linesOf(card) * CODE_LINE_HEIGHT + 2 * EDITOR_PAD + TILE_BORDER,
-          },
-        ];
-      }),
-    [cardsById, linesOf, order, prefs.pins, prefs.sizes],
+      new Map(
+        canvas.cards.map((card) => [
+          card.id,
+          prefs.heights[card.id] ?? chromeHeight(card) + rangeLines(card) * CODE_LINE_HEIGHT,
+        ]),
+      ),
+    [canvas.cards, prefs.heights],
   );
-  const layout = useMemo(() => layoutMap(items, view.width / zoom), [items, view.width, zoom]);
+
+  const layoutAt = useCallback(
+    (scale: number): MapLayout => {
+      const width = view.width / scale;
+      const items: MapItem[] = canvas.cards.map((card) => ({
+        id: card.id,
+        height: heights.get(card.id) ?? 0,
+      }));
+      let columns: string[][] | null = null;
+      if (prefs.columns) {
+        // The user's columns, without cards that are gone; new cards join the shortest column.
+        columns = prefs.columns
+          .map((column) => column.filter((id) => cardsById.has(id)))
+          .filter((column) => column.length > 0);
+        const placed = new Set(columns.flat());
+        for (const item of items) {
+          if (placed.has(item.id) || columns.length === 0) continue;
+          const totals = columns.map((column) =>
+            column.reduce((total, id) => total + (heights.get(id) ?? 0), 0),
+          );
+          columns[totals.indexOf(Math.min(...totals))]!.push(item.id);
+        }
+        if (columns.length === 0) columns = null;
+      }
+      columns ??= autoColumns(items, Math.max(1, Math.floor(width / AUTO_COLUMN_WIDTH)));
+      return layoutColumns(columns, heights, prefs.columns ? prefs.weights : [], width);
+    },
+    [canvas.cards, cardsById, heights, prefs.columns, prefs.weights, view.width],
+  );
+  const layout = useMemo(() => layoutAt(zoom), [layoutAt, zoom]);
+  const order = useMemo(() => layout.columns.flat(), [layout.columns]);
 
   // Pointer handlers read the latest values through refs.
-  const latest = useRef({ layout, zoom, prefs, view });
-  latest.current = { layout, zoom, prefs, view };
+  const latest = useRef({ layout, zoom, prefs });
+  latest.current = { layout, zoom, prefs };
 
   const contentPoint = (clientX: number, clientY: number) => {
     const rect = contentRef.current!.getBoundingClientRect();
@@ -187,17 +214,25 @@ export function MapView(props: {
     const startX = event.clientX;
     const startY = event.clientY;
     let moved = false;
+    let frame = 0;
+    let last: PointerEvent | null = null;
     const move = (moveEvent: PointerEvent) => {
       const dx = moveEvent.clientX - startX;
       const dy = moveEvent.clientY - startY;
       if (!moved && Math.hypot(dx, dy) < 4) return;
       if (!moved) document.body.style.cursor = cursor;
       moved = true;
-      onMove(dx, dy, moveEvent);
+      last = moveEvent;
+      // One update per frame, however fast the pointer moves.
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        if (last) onMove(last.clientX - startX, last.clientY - startY, last);
+      });
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      cancelAnimationFrame(frame);
       document.body.style.removeProperty("cursor");
       onEnd(moved);
     };
@@ -229,109 +264,112 @@ export function MapView(props: {
     );
   };
 
+  /** The user's columns from now on: the ones on screen. */
+  const fixColumns = (current: MapPrefs, shown: MapLayout): MapPrefs =>
+    current.columns
+      ? current
+      : { ...current, columns: shown.columns, weights: shown.columns.map(() => 1) };
+
   const startMove = (event: React.PointerEvent, id: string) => {
     const rect = layout.rects.get(id);
     if (!rect) return;
     const start = contentPoint(event.clientX, event.clientY);
     const offset = { x: start.x - rect.x, y: start.y - rect.y };
+    let current: Drag | null = null;
     track(
       event,
       (_dx, _dy, moveEvent) => {
-        const { layout: current, prefs: currentPrefs, zoom: scale, view: box } = latest.current;
+        const { layout: shown, zoom: scale } = latest.current;
         const point = contentPoint(moveEvent.clientX, moveEvent.clientY);
-        const pinnedOthers: MapRect[] = [];
-        for (const [otherId, other] of current.rects) {
-          if (otherId !== id && currentPrefs.pins[otherId]) pinnedOthers.push(other);
-        }
-        const edge = { x: box.width / scale, y: 0, width: 0, height: 0 };
-        const place = snapRect(
-          { x: point.x - offset.x, y: point.y - offset.y, width: rect.width, height: rect.height },
-          [...pinnedOthers, edge],
-          pinnedOthers,
-          SNAP_REACH / scale,
-        );
-        setDrag({ id, ...place });
-        setPrefs((previous) => ({
-          pins: { ...previous.pins, [id]: place },
-          sizes: {
-            ...previous.sizes,
-            [id]: { width: rect.width, lines: linesIn(cardOf(id), rect.height) },
-          },
-        }));
+        current = {
+          id,
+          x: point.x - offset.x,
+          y: point.y - offset.y,
+          drop: dropAt(shown, id, point.x, point.y, NEW_COLUMN_REACH / scale),
+        };
+        setDrag(current);
       },
       (moved) => {
         setDrag(null);
-        if (!moved) raise(id);
+        if (!moved) {
+          raise(id);
+          return;
+        }
+        const landed = current;
+        if (!landed) return;
+        const shown = latest.current.layout;
+        setPrefs((previous) => {
+          const fixed = fixColumns(previous, shown);
+          return { ...fixed, ...applyDrop(shown.columns, fixed.weights, id, landed.drop) };
+        });
       },
       "grabbing",
     );
   };
 
-  const cardOf = (id: string) => cardsById.get(id)!;
-
-  const unpin = (id: string) =>
-    setPrefs((previous) => {
-      const { [id]: _pin, ...pins } = previous.pins;
-      const { [id]: _size, ...sizes } = previous.sizes;
-      return { pins, sizes };
-    });
-
-  const startResize = (
-    event: React.PointerEvent,
-    card: CanvasCardRecord,
-    axes: "x" | "y" | "xy",
-  ) => {
-    // A resized editor stays where it is, at the size it shows now.
-    const rect = layout.rects.get(card.id);
-    if (!rect) return;
-    const startWidth = rect.width;
-    const startLines = linesIn(card, rect.height);
-    setResizing(card.id);
+  /** Drag the line between two columns. */
+  const startColumnResize = (event: React.PointerEvent, index: number) => {
+    const shown = layout;
+    const widths = shown.columnRects.map((column) => column.width);
+    setResizing(true);
     track(
       event,
-      (dx, dy) => {
-        const scale = latest.current.zoom;
-        setPrefs((current) => ({
-          pins: { ...current.pins, [card.id]: current.pins[card.id] ?? { x: rect.x, y: rect.y } },
-          sizes: {
-            ...current.sizes,
-            [card.id]: {
-              ...current.sizes[card.id],
-              ...(axes !== "y"
-                ? { width: Math.max(MIN_WIDTH, Math.round(startWidth + dx / scale)) }
-                : {}),
-              ...(axes !== "x"
-                ? {
-                    lines: Math.max(
-                      MIN_LINES,
-                      Math.round(startLines + dy / scale / CODE_LINE_HEIGHT),
-                    ),
-                  }
-                : {}),
-            },
-          },
-        }));
+      (dx) => {
+        const delta = dx / latest.current.zoom;
+        const left = widths[index]!;
+        const right = widths[index + 1]!;
+        const moved = Math.max(MIN_COLUMN_WIDTH - left, Math.min(right - MIN_COLUMN_WIDTH, delta));
+        const next = widths.map((width, other) =>
+          other === index ? left + moved : other === index + 1 ? right - moved : width,
+        );
+        setPrefs((previous) => ({ ...fixColumns(previous, shown), weights: next }));
       },
-      () => setResizing(null),
-      axes === "x" ? "ew-resize" : axes === "y" ? "ns-resize" : "nwse-resize",
+      () => setResizing(false),
+      "col-resize",
     );
   };
 
-  // Zoom keeps the point under the pointer (or the view's centre) in place.
-  const anchorRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
-  const zoomTo = useCallback((next: number, at?: { clientX: number; clientY: number }) => {
+  /** Drag the line between two editors in a column. */
+  const startEditorResize = (event: React.PointerEvent, above: string, below: string) => {
+    const shown = layout;
+    const top = shown.rects.get(above);
+    const bottom = shown.rects.get(below);
+    const topCard = cardsById.get(above);
+    const bottomCard = cardsById.get(below);
+    const column = shown.columns.find((ids) => ids.includes(above));
+    if (!top || !bottom || !topCard || !bottomCard || !column) return;
+    // Heights stretch by the column's scale; undo it to store the editors' own heights.
+    const natural = column.reduce((total, id) => total + (heights.get(id) ?? 0), 0);
+    const scale = natural > 0 ? shown.height / natural : 1;
+    const minTop = chromeHeight(topCard) + MIN_LINES * CODE_LINE_HEIGHT;
+    const minBottom = chromeHeight(bottomCard) + MIN_LINES * CODE_LINE_HEIGHT;
+    setResizing(true);
+    track(
+      event,
+      (_dx, dy) => {
+        const delta = dy / latest.current.zoom;
+        const moved = Math.max(minTop - top.height, Math.min(bottom.height - minBottom, delta));
+        setPrefs((previous) => ({
+          ...fixColumns(previous, shown),
+          heights: {
+            ...previous.heights,
+            [above]: (top.height + moved) / scale,
+            [below]: (bottom.height - moved) / scale,
+          },
+        }));
+      },
+      () => setResizing(false),
+      "row-resize",
+    );
+  };
+
+  // Zoom keeps the map's top-left corner where it is on screen.
+  const anchorRef = useRef<{ x: number; y: number } | null>(null);
+  const zoomTo = useCallback((next: number) => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const box = scroller.getBoundingClientRect();
-    const px = at ? at.clientX - box.left : scroller.clientWidth / 2;
-    const py = at ? at.clientY - box.top : scroller.clientHeight / 2;
     const scale = latest.current.zoom;
-    anchorRef.current = {
-      x: (scroller.scrollLeft + px) / scale,
-      y: (scroller.scrollTop + py) / scale,
-      px,
-      py,
-    };
+    anchorRef.current = { x: scroller.scrollLeft / scale, y: scroller.scrollTop / scale };
     setZoom(clampZoom(next));
   }, []);
   useLayoutEffect(() => {
@@ -339,8 +377,8 @@ export function MapView(props: {
     const scroller = scrollerRef.current;
     if (!anchor || !scroller) return;
     anchorRef.current = null;
-    scroller.scrollLeft = anchor.x * zoom - anchor.px;
-    scroller.scrollTop = anchor.y * zoom - anchor.py;
+    scroller.scrollLeft = anchor.x * zoom;
+    scroller.scrollTop = anchor.y * zoom;
   }, [zoom]);
 
   useEffect(() => {
@@ -349,7 +387,7 @@ export function MapView(props: {
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
-      zoomTo(latest.current.zoom * Math.exp(-event.deltaY * 0.004), event);
+      zoomTo(latest.current.zoom * Math.exp(-event.deltaY * 0.004));
     };
     scroller.addEventListener("wheel", onWheel, { passive: false });
     return () => scroller.removeEventListener("wheel", onWheel);
@@ -358,9 +396,7 @@ export function MapView(props: {
   /** The largest zoom, up to 100%, that shows the whole map. */
   const fit = () => {
     let next = 1;
-    while (next > MIN_ZOOM) {
-      const fitted = layoutMap(items, view.width / next);
-      if (fitted.width * next <= view.width + 1 && fitted.height * next <= view.height + 1) break;
+    while (next > MIN_ZOOM && layoutAt(next).height * next > view.height + 1) {
       next = Math.round((next - 0.05) * 100) / 100;
     }
     zoomTo(next);
@@ -369,20 +405,15 @@ export function MapView(props: {
 
   // Keep the selected editor in view.
   useEffect(() => {
-    const rect = selected ? layout.rects.get(selected) : null;
+    const rect = selected ? latest.current.layout.rects.get(selected) : null;
     const scroller = scrollerRef.current;
     if (!rect || !scroller) return;
-    const left = rect.x * zoom;
-    const top = rect.y * zoom;
-    const right = left + rect.width * zoom;
-    const bottom = top + rect.height * zoom;
-    const margin = 24;
-    let scrollLeft = scroller.scrollLeft;
-    let scrollTop = scroller.scrollTop;
-    if (left < scrollLeft || right > scrollLeft + scroller.clientWidth) scrollLeft = left - margin;
-    if (top < scrollTop || bottom > scrollTop + scroller.clientHeight) scrollTop = top - margin;
-    scroller.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "smooth" });
-    // Only a new selection scrolls, not a reflow.
+    const scale = latest.current.zoom;
+    const top = rect.y * scale;
+    const bottom = top + rect.height * scale;
+    if (top < scroller.scrollTop || bottom > scroller.scrollTop + scroller.clientHeight) {
+      scroller.scrollTo({ top, behavior: "smooth" });
+    }
   }, [selected]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -418,6 +449,7 @@ export function MapView(props: {
   }, []);
 
   const raisedCard = raised ? (cardsById.get(raised) ?? null) : null;
+  const marker = drag ? dropMarker(layout, drag) : null;
 
   return (
     <div
@@ -446,18 +478,26 @@ export function MapView(props: {
             <ScanIcon className="size-3.5" />
           </ToolButton>
         </div>
-        <ToolButton
-          label="Put every editor back in the packing"
-          onClick={() => setPrefs({ pins: {}, sizes: {} })}
+        <button
+          type="button"
+          onClick={() => setPrefs(AUTO)}
+          title="Let the map pick the columns again"
+          className={cn(
+            "flex items-center gap-1.5 rounded-md border px-2 py-1",
+            prefs.columns
+              ? "border-border/70 text-muted-foreground hover:text-foreground"
+              : "border-primary/50 bg-primary/10 text-foreground",
+          )}
         >
-          <RotateCcwIcon className="size-3.5" />
-        </ToolButton>
+          <LayoutDashboardIcon className="size-3.5" />
+          {prefs.columns ? "Auto layout" : "Auto layout on"}
+        </button>
         <ToolButton label="Step view" onClick={() => onSteps(selected)}>
           <FootprintsIcon className="size-3.5" />
         </ToolButton>
         <span className="ml-auto hidden truncate text-2xs text-muted-foreground xl:inline">
-          Drag a title to move · edges to resize · click to open · drag or scroll to pan ·
-          Cmd-scroll to zoom
+          Drag a title to move · drag a line between editors to resize · click to open · Cmd-scroll
+          to zoom
         </span>
       </div>
       {canvas.cards.length === 0 ? (
@@ -495,21 +535,47 @@ export function MapView(props: {
                   card={card}
                   path={projectPath(card.path)}
                   lines={linesIn(card, rect.height)}
-                  pinned={Boolean(prefs.pins[id])}
-                  onUnpin={() => unpin(id)}
                   x={drag && dragged ? drag.x : rect.x}
                   y={drag && dragged ? drag.y : rect.y}
                   width={rect.width}
                   height={rect.height}
                   dragged={dragged}
-                  still={dragged || resizing === id}
+                  still={dragged || resizing}
                   selected={selected === id}
                   onMoveStart={(event) => startMove(event, id)}
                   onBodyDown={(event) => startPan(event, () => raise(id))}
-                  onResizeStart={(event, axes) => startResize(event, card, axes)}
                 />
               );
             })}
+            {layout.columnRects.slice(1).map((column, index) => (
+              <div
+                key={`column-${column.x}`}
+                onPointerDown={(event) => startColumnResize(event, index)}
+                className="drawout-map-divider absolute top-0 z-10 w-2 -translate-x-1/2 cursor-col-resize"
+                style={{ left: column.x, height: layout.height }}
+              />
+            ))}
+            {layout.columns.flatMap((column) =>
+              column.slice(1).map((below, index) => {
+                const above = column[index]!;
+                const rect = layout.rects.get(below);
+                if (!rect) return null;
+                return (
+                  <div
+                    key={`row-${below}`}
+                    onPointerDown={(event) => startEditorResize(event, above, below)}
+                    className="drawout-map-divider absolute z-10 h-2 -translate-y-1/2 cursor-row-resize"
+                    style={{ left: rect.x, top: rect.y, width: rect.width }}
+                  />
+                );
+              }),
+            )}
+            {marker ? (
+              <div
+                className="pointer-events-none absolute z-40 rounded-full bg-primary shadow-[0_0_0_3px] shadow-primary/30"
+                style={marker}
+              />
+            ) : null}
           </div>
         </div>
       </div>
@@ -529,6 +595,40 @@ export function MapView(props: {
   );
 }
 
+/** The bar that shows where a dragged editor lands. */
+function dropMarker(layout: MapLayout, drag: Drag): React.CSSProperties | null {
+  const { drop } = drag;
+  const bar = 4;
+  if (drop.kind === "column") {
+    const x = layout.columnRects[drop.index]?.x ?? layout.width;
+    return {
+      left: Math.min(Math.max(0, x - bar / 2), layout.width - bar),
+      top: 0,
+      width: bar,
+      height: layout.height,
+    };
+  }
+  const column = layout.columnRects[drop.column];
+  if (!column) return null;
+  const others = (layout.columns[drop.column] ?? []).filter((id) => id !== drag.id);
+  const next = others[drop.index];
+  const previous = others[drop.index - 1];
+  const y = next
+    ? (layout.rects.get(next)?.y ?? 0)
+    : previous
+      ? (() => {
+          const rect = layout.rects.get(previous);
+          return rect ? rect.y + rect.height : 0;
+        })()
+      : 0;
+  return {
+    left: column.x + 8,
+    top: Math.min(Math.max(0, y - bar / 2), layout.height - bar),
+    width: column.width - 16,
+    height: bar,
+  };
+}
+
 function MapTile(props: {
   readonly environmentId: EnvironmentId;
   readonly card: CanvasCardRecord;
@@ -539,13 +639,10 @@ function MapTile(props: {
   readonly width: number;
   readonly height: number;
   readonly dragged: boolean;
-  readonly pinned: boolean;
-  readonly onUnpin: () => void;
   readonly still: boolean;
   readonly selected: boolean;
   readonly onMoveStart: (event: React.PointerEvent) => void;
   readonly onBodyDown: (event: React.PointerEvent) => void;
-  readonly onResizeStart: (event: React.PointerEvent, axes: "x" | "y" | "xy") => void;
 }) {
   const { card, dragged, selected } = props;
   const lane = LANE_STYLES[card.lane];
@@ -553,7 +650,7 @@ function MapTile(props: {
     <div
       className={cn(
         "drawout-map-tile absolute top-0 left-0 flex flex-col overflow-hidden border",
-        dragged && "z-20 shadow-2xl",
+        dragged && "pointer-events-none z-30 opacity-90 shadow-2xl",
         selected && "drawout-map-tile-selected z-10",
         !props.still && "transition-[transform,width,height] duration-200 ease-out",
       )}
@@ -575,18 +672,6 @@ function MapTile(props: {
           <span className="drawout-map-tile-lane shrink-0 text-2xs font-semibold uppercase">
             {lane.label}
           </span>
-          {props.pinned ? (
-            <button
-              type="button"
-              aria-label="Put back in the packing"
-              title="Put back in the packing"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={props.onUnpin}
-              className="shrink-0 text-muted-foreground hover:text-foreground"
-            >
-              <PinIcon className="size-3" />
-            </button>
-          ) : null}
           <span className="shrink-0 truncate text-sm font-semibold">
             {card.title ?? card.path.split("/").pop()}
           </span>
@@ -611,18 +696,6 @@ function MapTile(props: {
           title="Click to open the whole file"
         />
       </div>
-      <div
-        onPointerDown={(event) => props.onResizeStart(event, "x")}
-        className="absolute top-0 right-0 bottom-0 w-1.5 cursor-ew-resize hover:bg-primary/30"
-      />
-      <div
-        onPointerDown={(event) => props.onResizeStart(event, "y")}
-        className="absolute right-0 bottom-0 left-0 h-1.5 cursor-ns-resize hover:bg-primary/30"
-      />
-      <div
-        onPointerDown={(event) => props.onResizeStart(event, "xy")}
-        className="absolute right-0 bottom-0 size-3 cursor-nwse-resize hover:bg-primary/40"
-      />
     </div>
   );
 }

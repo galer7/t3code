@@ -4,7 +4,6 @@
  */
 import {
   CanvasCardId,
-  CanvasClearResult,
   CanvasLane,
   CanvasMarkResult,
   CanvasMarkTone,
@@ -170,23 +169,4 @@ export const CanvasMarkTool = Tool.make("trace_mark", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasClearTool = Tool.make("trace_clear", {
-  description:
-    "Remove every card from the current trace. Use it only when the user asks for a fresh trace.",
-  parameters: Tool.EmptyParams,
-  success: CanvasClearResult,
-  failure: CanvasToolError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Clear the current trace")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
-
-export const CanvasToolkit = Toolkit.make(
-  CanvasShowCodeTool,
-  CanvasStartTraceTool,
-  CanvasMarkTool,
-  CanvasClearTool,
-);
+export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool, CanvasStartTraceTool, CanvasMarkTool);

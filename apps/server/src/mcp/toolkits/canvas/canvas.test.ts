@@ -312,25 +312,38 @@ it.effect("shows a range once: showing it again returns the same card", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("clears the current trace and says how many cards it removed", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      yield* serveMcp;
-      const token = yield* issueToken(threadA);
+it.effect(
+  "lets the user delete a trace with its cards and marks; the agent has no tool for it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* serveMcp;
+        const token = yield* issueToken(threadA);
+        const store = yield* CanvasStore.CanvasStore;
 
-      yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
-      yield* callTool(token, "trace_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
-      const cleared = yield* callTool(token, "trace_clear", {});
+        yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+        yield* callTool(token, "trace_start", { title: "Second" });
+        yield* callTool(token, "trace_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
+        yield* callTool(token, "trace_mark", { cardId: "c2", startLine: 1, text: "x" });
+        const clear = yield* callTool(token, "trace_clear", {});
+        yield* store.edit(threadA, { type: "removeTrace", traceId: "t2" });
 
-      expect({
-        cleared: cleared.structuredContent,
-        cards: (yield* canvasOf(threadA)).cards,
-      }).toEqual({
-        cleared: { removedCards: 2 },
-        cards: [],
-      });
-    }),
-  ).pipe(Effect.provide(TestLayer)),
+        const canvas = yield* canvasOf(threadA);
+        expect({
+          clearRefused: clear === undefined || clear.isError === true,
+          traces: canvas.traces,
+          current: canvas.currentTrace,
+          cards: canvas.cards.map((card) => card.id),
+          marks: canvas.marks,
+        }).toEqual({
+          clearRefused: true,
+          traces: [{ id: "t1", title: "Trace 1" }],
+          current: "t1",
+          cards: ["c1"],
+          marks: [],
+        });
+      }),
+    ).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("keeps an absolute path as it is", () =>

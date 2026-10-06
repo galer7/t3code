@@ -44,8 +44,7 @@ export class CanvasTraceNotFoundError extends Schema.TaggedError<CanvasTraceNotF
 export type CanvasCommandResult =
   | { readonly cardId: string; readonly traceId: string }
   | { readonly traceId: string }
-  | { readonly markId: string }
-  | { readonly removedCards: number };
+  | { readonly markId: string };
 
 export class CanvasStore extends Context.Service<
   CanvasStore,
@@ -217,18 +216,6 @@ const applyCommand = (
           },
         ] as const;
       }
-      case "clear": {
-        const removed = canvas.cards.filter((card) => card.trace === canvas.currentTrace);
-        const gone = new Set(removed.map((card) => card.id));
-        return [
-          { removedCards: removed.length },
-          {
-            ...canvas,
-            cards: canvas.cards.filter((card) => !gone.has(card.id)),
-            marks: (canvas.marks ?? []).filter((mark) => !gone.has(mark.cardId)),
-          },
-        ] as const;
-      }
     }
   });
 
@@ -255,6 +242,23 @@ const applyEdit = (canvas: ThreadCanvasState, edit: CanvasEdit): ThreadCanvasSta
     }
     case "clear":
       return { ...canvas, cards: [], arrows: [], pinned: {} };
+    case "removeTrace": {
+      const traces = (canvas.traces ?? []).filter((trace) => trace.id !== edit.traceId);
+      if (traces.length === (canvas.traces ?? []).length) return canvas;
+      const gone = new Set(
+        canvas.cards.filter((card) => card.trace === edit.traceId).map((card) => card.id),
+      );
+      return {
+        ...canvas,
+        traces,
+        currentTrace:
+          canvas.currentTrace === edit.traceId
+            ? (traces.at(-1)?.id ?? null)
+            : (canvas.currentTrace ?? null),
+        cards: canvas.cards.filter((card) => !gone.has(card.id)),
+        marks: (canvas.marks ?? []).filter((mark) => !gone.has(mark.cardId)),
+      };
+    }
   }
 };
 

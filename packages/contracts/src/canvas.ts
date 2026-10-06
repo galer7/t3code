@@ -70,17 +70,10 @@ export const CanvasMarkCommand = Schema.Struct({
 });
 export type CanvasMarkCommand = typeof CanvasMarkCommand.Type;
 
-/** Remove every card from the current trace. */
-export const CanvasClearCommand = Schema.Struct({
-  type: Schema.Literal("clear"),
-});
-export type CanvasClearCommand = typeof CanvasClearCommand.Type;
-
 export const CanvasCommand = Schema.Union([
   CanvasShowCodeCommand,
   CanvasStartTraceCommand,
   CanvasMarkCommand,
-  CanvasClearCommand,
 ]);
 export type CanvasCommand = typeof CanvasCommand.Type;
 
@@ -99,11 +92,6 @@ export const CanvasMarkResult = Schema.Struct({
   markId: TrimmedNonEmptyString,
 });
 export type CanvasMarkResult = typeof CanvasMarkResult.Type;
-
-export const CanvasClearResult = Schema.Struct({
-  removedCards: Schema.Int,
-});
-export type CanvasClearResult = typeof CanvasClearResult.Type;
 
 export const CanvasHostRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
@@ -215,6 +203,8 @@ export const CanvasEdit = Schema.Union([
   Schema.Struct({ type: Schema.Literal("unpinAll") }),
   Schema.Struct({ type: Schema.Literal("remove"), cardId: CanvasCardId }),
   Schema.Struct({ type: Schema.Literal("clear") }),
+  /** Delete a trace with its cards and marks. Only the user deletes traces. */
+  Schema.Struct({ type: Schema.Literal("removeTrace"), traceId: CanvasTraceId }),
 ]);
 export type CanvasEdit = typeof CanvasEdit.Type;
 

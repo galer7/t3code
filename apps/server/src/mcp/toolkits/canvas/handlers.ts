@@ -1,9 +1,4 @@
-import {
-  CanvasClearResult,
-  CanvasMarkResult,
-  CanvasShowCodeResult,
-  CanvasStartTraceResult,
-} from "@t3tools/contracts";
+import { CanvasMarkResult, CanvasShowCodeResult, CanvasStartTraceResult } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -22,7 +17,6 @@ import {
 const isShowCodeResult = Schema.is(CanvasShowCodeResult);
 const isStartTraceResult = Schema.is(CanvasStartTraceResult);
 const isMarkResult = Schema.is(CanvasMarkResult);
-const isClearResult = Schema.is(CanvasClearResult);
 
 const make = Effect.gen(function* () {
   const store = yield* CanvasStore.CanvasStore;
@@ -98,13 +92,6 @@ const make = Effect.gen(function* () {
         });
         if (!isMarkResult(result)) return yield* Effect.die("trace_mark: no mark id");
         return { markId: result.markId };
-      }),
-    trace_clear: () =>
-      Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
-        const result = yield* store.apply(scope.threadId, { type: "clear" });
-        if (!isClearResult(result)) return yield* Effect.die("trace_clear: no count");
-        return { removedCards: result.removedCards };
       }),
   });
 });

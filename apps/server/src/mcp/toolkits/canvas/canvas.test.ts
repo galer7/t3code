@@ -483,3 +483,32 @@ it.effect("records the git repo of each card, so one trace can show two repos", 
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
+
+it.effect("adds a card before another, so a trace can start earlier without a new trace", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const token = yield* issueToken(threadA);
+
+      yield* callTool(token, "trace_show_code", { path: "app.ts", startLine: 1, endLine: 2 });
+      yield* callTool(token, "trace_show_code", { path: "api.ts", startLine: 1, endLine: 2 });
+      const earlier = yield* callTool(token, "trace_show_code", {
+        path: "/srv/site/landing.rb",
+        startLine: 1,
+        endLine: 2,
+        before: "c1",
+      });
+
+      const canvas = yield* canvasOf(threadA);
+      expect({
+        earlier: earlier.structuredContent,
+        order: canvas.cards.map((card) => card.id),
+        traces: canvas.traces?.length,
+      }).toEqual({
+        earlier: { cardId: "c3", traceId: "t1" },
+        order: ["c3", "c1", "c2"],
+        traces: 1,
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);

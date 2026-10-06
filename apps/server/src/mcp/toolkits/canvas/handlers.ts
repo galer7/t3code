@@ -88,7 +88,7 @@ const make = Effect.gen(function* () {
       );
 
   return CanvasToolkit.of({
-    trace_show_code: ({ path, startLine, endLine, lane, title, caption, trace }) =>
+    trace_show_code: ({ path, startLine, endLine, lane, title, caption, trace, before }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         if (endLine < startLine) {
@@ -106,6 +106,7 @@ const make = Effect.gen(function* () {
           ...(title === undefined ? {} : { title }),
           ...(caption === undefined ? {} : { caption }),
           ...(trace === undefined ? {} : { trace }),
+          ...(before === undefined ? {} : { before }),
         });
         if (!isShowCodeResult(result)) return yield* Effect.die("trace_show_code: no card id");
         return { cardId: result.cardId, traceId: result.traceId };

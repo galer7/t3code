@@ -49,6 +49,8 @@ export const CanvasShowCodeCommand = Schema.Struct({
   caption: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
   /** The trace the card joins. Default: the current trace. */
   trace: Schema.optional(CanvasTraceId),
+  /** Put the card before this card, in that card's trace. Default: at the end. */
+  before: Schema.optional(CanvasCardId),
   /** The root of the git repo that holds the file, when there is one. */
   repo: Schema.optional(TrimmedNonEmptyString),
 });

@@ -149,7 +149,9 @@ const applyCommand = (
     switch (command.type) {
       case "showCode": {
         let next = canvas;
-        let traceId = command.trace ?? canvas.currentTrace ?? null;
+        if (command.before !== undefined) yield* requireCard(canvas, command.before);
+        const beforeCard = canvas.cards.find((card) => card.id === command.before);
+        let traceId = beforeCard?.trace ?? command.trace ?? canvas.currentTrace ?? null;
         if (traceId !== null && !(canvas.traces ?? []).some((trace) => trace.id === traceId)) {
           return yield* new CanvasTraceNotFoundError({ traceId, known: traceIds(canvas) });
         }
@@ -197,11 +199,12 @@ const applyCommand = (
           trace: traceId,
           ...(command.repo === undefined ? {} : { repo: command.repo }),
         };
+        const at = beforeCard ? next.cards.indexOf(beforeCard) : next.cards.length;
         return [
           { cardId: id, traceId },
           {
             ...next,
-            cards: [...next.cards, card],
+            cards: [...next.cards.slice(0, at), card, ...next.cards.slice(at)],
             nextCard: next.nextCard + 1,
             currentTrace: traceId,
           },

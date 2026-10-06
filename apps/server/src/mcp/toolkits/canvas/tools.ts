@@ -61,6 +61,12 @@ export const CanvasShowCodeInput = Schema.Struct({
         "The trace the card joins, by the id trace_start or trace_show_code returned. Default: the current trace, which is the one you last started or added to.",
     }),
   ),
+  before: Schema.optional(
+    CanvasCardId.annotate({
+      description:
+        "Put the card before this card, in that card's trace, for example to start the trace earlier in the flow. Default: at the end.",
+    }),
+  ),
 });
 export type CanvasShowCodeInput = typeof CanvasShowCodeInput.Type;
 
@@ -192,7 +198,7 @@ export const CanvasShowCodeTool = Tool.make("trace_show_code", {
 
 export const CanvasStartTraceTool = Tool.make("trace_start", {
   description:
-    "Start a new trace in this thread; it becomes the current trace, and the user sees it. Start one when the conversation moves to code that does not continue the current trace, or when the user asks. Returns the trace id.",
+    "Start a new trace in this thread; it becomes the current trace. Rarely needed: only when the user asks for a new trace, or the conversation moves to a different feature. To extend, reorder or fix the current trace, use trace_show_code with `before` and trace_edit_card instead. Returns the trace id.",
   parameters: CanvasStartTraceInput,
   success: CanvasStartTraceResult,
   failure: CanvasToolError,

@@ -1,11 +1,11 @@
-import { CanvasShowCodeResult } from "@t3tools/contracts";
+import { CanvasClearResult, CanvasConnectResult, CanvasShowCodeResult } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as CanvasHostBroker from "../../CanvasHostBroker.ts";
+import * as CanvasStore from "../../../canvas/CanvasStore.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   CanvasRangeInvalidError,
@@ -15,9 +15,11 @@ import {
 } from "./tools.ts";
 
 const isShowCodeResult = Schema.is(CanvasShowCodeResult);
+const isConnectResult = Schema.is(CanvasConnectResult);
+const isClearResult = Schema.is(CanvasClearResult);
 
 const make = Effect.gen(function* () {
-  const broker = yield* CanvasHostBroker.CanvasHostBroker;
+  const store = yield* CanvasStore.CanvasStore;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const paths = yield* Path.Path;
 
@@ -38,7 +40,7 @@ const make = Effect.gen(function* () {
   });
 
   return CanvasToolkit.of({
-    canvas_show_code: ({ path, startLine, endLine, lane }) =>
+    canvas_show_code: ({ path, startLine, endLine, lane, title, caption, after }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         if (endLine < startLine) {
@@ -57,24 +59,37 @@ const make = Effect.gen(function* () {
               ),
               path,
             );
-        const result = yield* broker.invoke({
-          scope,
-          command: {
-            type: "showCode",
-            path: absolutePath,
-            startLine,
-            endLine,
-            ...(lane === undefined ? {} : { lane }),
-          },
+        const result = yield* store.apply(scope.threadId, {
+          type: "showCode",
+          path: absolutePath,
+          startLine,
+          endLine,
+          ...(lane === undefined ? {} : { lane }),
+          ...(title === undefined ? {} : { title }),
+          ...(caption === undefined ? {} : { caption }),
+          ...(after === undefined ? {} : { after }),
         });
-        if (!isShowCodeResult(result)) {
-          return yield* new CanvasHostBroker.CanvasHostRejectedError({
-            threadId: scope.threadId,
-            requestId: "unknown",
-            reason: "the Draw-out window answered without a card id.",
-          });
-        }
+        if (!isShowCodeResult(result)) return yield* Effect.die("canvas_show_code: no card id");
         return { cardId: result.cardId };
+      }),
+    canvas_connect: ({ from, to, label }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
+        const result = yield* store.apply(scope.threadId, {
+          type: "connect",
+          from,
+          to,
+          ...(label === undefined ? {} : { label }),
+        });
+        if (!isConnectResult(result)) return yield* Effect.die("canvas_connect: no arrow id");
+        return { arrowId: result.arrowId };
+      }),
+    canvas_clear: () =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
+        const result = yield* store.apply(scope.threadId, { type: "clear" });
+        if (!isClearResult(result)) return yield* Effect.die("canvas_clear: no count");
+        return { removedCards: result.removedCards };
       }),
   });
 });

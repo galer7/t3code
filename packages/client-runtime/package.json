@@ -163,6 +163,10 @@
       "types": "./src/state/preview.ts",
       "default": "./src/state/preview.ts"
     },
+    "./state/canvas": {
+      "types": "./src/state/canvas.ts",
+      "default": "./src/state/canvas.ts"
+    },
     "./state/projects": {
       "types": "./src/state/projects.ts",
       "default": "./src/state/projects.ts"

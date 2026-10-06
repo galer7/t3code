@@ -1,14 +1,12 @@
 /**
- * Draw-out: the canvas protocol at its boundary. A test calls `canvas_show_code`
- * over HTTP with a thread's MCP token, as the agent does. A fake Draw-out
- * client, connected as a canvas host over the canvas-host RPCs, applies each
- * request to its canvas model and answers. The test checks that model.
+ * Draw-out: the canvas tools at their boundary. A test calls a `canvas_*` tool
+ * over HTTP with a thread's MCP token, as the agent does, and reads the
+ * thread's canvas from the server's canvas store, as a window does.
  */
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  type CanvasHostRequest,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
@@ -28,7 +26,8 @@ import { RpcGroup, RpcTest } from "effect/unstable/rpc";
 
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as CanvasHostBroker from "../../CanvasHostBroker.ts";
+import * as CanvasStore from "../../../canvas/CanvasStore.ts";
+import * as ServerConfig from "../../../config.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 
@@ -47,7 +46,9 @@ const fakeEnvironment = ServerEnvironment.ServerEnvironment.of({
 });
 
 const TestLayer = Layer.mergeAll(
-  CanvasHostBroker.layer,
+  CanvasStore.layer.pipe(
+    Layer.provide(ServerConfig.layerTest(workspaceRoot, { prefix: "draw-out-canvas-test-" })),
+  ),
   Layer.effect(McpSessionRegistry.McpSessionRegistry, McpSessionRegistry.__testing.make()).pipe(
     Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
   ),
@@ -131,126 +132,162 @@ const callTool = (authorization: string, name: string, args: Record<string, unkn
     return readJsonRpc(yield* response.text).result;
   });
 
-interface Card {
-  readonly cardId: string;
-  readonly path: string;
-  readonly startLine: number;
-  readonly endLine: number;
-}
-
-/**
- * A fake Draw-out client: connects as a canvas host over the canvas-host RPCs
- * and applies each request to the canvas of the request's thread. A host with
- * `answers: false` is a window-less extension host: it receives and never answers.
- */
-const connectFakeCanvasHost = (
-  hostEnvironmentId: EnvironmentId,
-  { clientId = "fake-draw-out", answers = true } = {},
-) =>
+const canvasOf = (threadId: ThreadId) =>
   Effect.gen(function* () {
-    const broker = yield* CanvasHostBroker.CanvasHostBroker;
-    const group = RpcGroup.make(
-      ...Array.from(WsRpcGroup.requests.values()).filter(
-        (rpc) =>
-          rpc._tag === WS_METHODS.canvasHostConnect || rpc._tag === WS_METHODS.canvasHostRespond,
-      ),
-    );
-    const client = yield* RpcTest.makeClient(group).pipe(
-      Effect.provide(
-        group.toLayer({
-          [WS_METHODS.canvasHostConnect]: (host) => Stream.unwrap(broker.connect(host)),
-          [WS_METHODS.canvasHostRespond]: (response) => broker.respond(response),
-        }),
-      ),
-    );
-    const requests: Array<CanvasHostRequest> = [];
-    const canvases = new Map<ThreadId, Array<Card>>();
-    const connected = yield* Deferred.make<void>();
-    const received = yield* Deferred.make<void>();
-    yield* Stream.runForEach(
-      client[WS_METHODS.canvasHostConnect]({ clientId, environmentId: hostEnvironmentId }),
-      (event) => {
-        if (event.type === "connected") return Deferred.succeed(connected, undefined);
-        const { request } = event;
-        requests.push(request);
-        if (!answers) return Deferred.succeed(received, undefined);
-        const cards = canvases.get(request.threadId) ?? [];
-        const card = {
-          cardId: `card-${cards.length + 1}`,
-          path: request.command.path,
-          startLine: request.command.startLine,
-          endLine: request.command.endLine,
-        };
-        canvases.set(request.threadId, [...cards, card]);
-        return client[WS_METHODS.canvasHostRespond]({
-          clientId,
-          connectionId: event.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: { cardId: card.cardId },
-        });
-      },
-    ).pipe(Effect.forkScoped);
-    yield* Deferred.await(connected);
-    return { requests, canvases, received: Deferred.await(received) };
+    const store = yield* CanvasStore.CanvasStore;
+    return yield* store.get(threadId);
   });
 
 it.effect("shows code as one card on the calling thread's canvas and returns its id", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
-      const host = yield* connectFakeCanvasHost(environmentId);
-      const tokenA = yield* issueToken(threadA);
-      yield* issueToken(threadB);
+      const token = yield* issueToken(threadA);
 
-      const result = yield* callTool(tokenA, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
-        startLine: 12,
-        endLine: 40,
+      const result = yield* callTool(token, "canvas_show_code", {
+        path: "app/controllers/uploads_controller.rb",
+        startLine: 4,
+        endLine: 18,
+        title: "UploadsController#create",
+        caption: "Attaches the file to the record.",
       });
 
-      expect(result.isError).toBeFalsy();
-      expect(host.requests).toHaveLength(1);
-      expect(host.requests[0]?.threadId).toBe(threadA);
-      expect(host.canvases.get(threadA)).toEqual([
-        {
-          cardId: "card-1",
-          path: `${workspaceRoot}/src/orders/cancel.ts`,
-          startLine: 12,
-          endLine: 40,
-        },
-      ]);
-      expect(host.canvases.get(threadB)).toBeUndefined();
-      expect(result.structuredContent).toEqual({ cardId: "card-1" });
+      expect({
+        result: result.structuredContent,
+        cards: (yield* canvasOf(threadA)).cards,
+        otherThread: (yield* canvasOf(threadB)).cards,
+      }).toEqual({
+        result: { cardId: "c1" },
+        cards: [
+          {
+            id: "c1",
+            path: `${workspaceRoot}/app/controllers/uploads_controller.rb`,
+            startLine: 4,
+            endLine: 18,
+            lane: "backend",
+            title: "UploadsController#create",
+            caption: "Attaches the file to the record.",
+            after: null,
+          },
+        ],
+        otherThread: [],
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("sends the lane the agent gives, and refuses a lane that does not exist", () =>
+it.effect("keeps the lane the agent gives, and refuses a lane that does not exist", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
-      const host = yield* connectFakeCanvasHost(environmentId);
       const token = yield* issueToken(threadA);
 
       yield* callTool(token, "canvas_show_code", {
-        path: "src/integrations/zoom.ts",
+        path: "zoom.ts",
         startLine: 1,
         endLine: 9,
         lane: "external",
       });
       const unknown = yield* callTool(token, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
+        path: "cancel.ts",
         startLine: 1,
         endLine: 9,
         lane: "database",
       });
 
       expect({
-        lanes: host.requests.map((request) => request.command.lane),
+        lanes: (yield* canvasOf(threadA)).cards.map((card) => card.lane),
         // The input schema refuses it: a JSON-RPC error, so there is no tool result.
         unknownRefused: unknown === undefined || unknown.isError === true,
       }).toEqual({ lanes: ["external"], unknownRefused: true });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("draws an arrow between two cards, and names the cards when one is missing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const token = yield* issueToken(threadA);
+
+      yield* callTool(token, "canvas_show_code", {
+        path: "upload.ts",
+        startLine: 1,
+        endLine: 20,
+        lane: "frontend",
+      });
+      yield* callTool(token, "canvas_show_code", {
+        path: "uploads_controller.rb",
+        startLine: 4,
+        endLine: 18,
+        after: "c1",
+      });
+      const connected = yield* callTool(token, "canvas_connect", {
+        from: "c1",
+        to: "c2",
+        label: "POST /uploads",
+      });
+      const missing = yield* callTool(token, "canvas_connect", { from: "c1", to: "c9" });
+
+      const canvas = yield* canvasOf(threadA);
+      expect({
+        connected: connected.structuredContent,
+        after: canvas.cards[1]?.after,
+        arrows: canvas.arrows,
+        missing: { isError: missing.isError, text: missing.content[0]?.text },
+      }).toEqual({
+        connected: { arrowId: "a1" },
+        after: "c1",
+        arrows: [{ id: "a1", from: "c1", to: "c2", label: "POST /uploads" }],
+        missing: { isError: true, text: "No card c9 on this canvas. Card ids: c1, c2." },
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("shows a range once: showing it again returns the same card", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const token = yield* issueToken(threadA);
+
+      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 5 });
+      const again = yield* callTool(token, "canvas_show_code", {
+        path: "a.rb",
+        startLine: 1,
+        endLine: 5,
+        title: "A",
+      });
+
+      const canvas = yield* canvasOf(threadA);
+      expect({
+        again: again.structuredContent,
+        titles: canvas.cards.map((card) => card.title),
+      }).toEqual({
+        again: { cardId: "c1" },
+        titles: ["A"],
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("clears the calling thread's canvas and says how many cards it removed", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const token = yield* issueToken(threadA);
+
+      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+      yield* callTool(token, "canvas_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
+      const cleared = yield* callTool(token, "canvas_clear", {});
+
+      expect({
+        cleared: cleared.structuredContent,
+        cards: (yield* canvasOf(threadA)).cards,
+      }).toEqual({
+        cleared: { removedCards: 2 },
+        cards: [],
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
@@ -259,56 +296,15 @@ it.effect("keeps an absolute path as it is", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
-      const host = yield* connectFakeCanvasHost(environmentId);
       const token = yield* issueToken(threadA);
 
       yield* callTool(token, "canvas_show_code", {
-        path: "/elsewhere/lib/zoom.ts",
-        startLine: 1,
-        endLine: 1,
+        path: "/srv/other/lib/x.ts",
+        startLine: 3,
+        endLine: 4,
       });
 
-      expect(host.canvases.get(threadA)?.map((card) => card.path)).toEqual([
-        "/elsewhere/lib/zoom.ts",
-      ]);
-    }),
-  ).pipe(Effect.provide(TestLayer)),
-);
-
-it.effect("tells the agent clearly when no Draw-out window is connected", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      yield* serveMcp;
-      const token = yield* issueToken(threadA);
-
-      const result = yield* callTool(token, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
-        startLine: 1,
-        endLine: 5,
-      });
-
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain("No Draw-out window is connected");
-    }),
-  ).pipe(Effect.provide(TestLayer)),
-);
-
-it.effect("sends a request only to a canvas host of the thread's environment", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      yield* serveMcp;
-      const otherHost = yield* connectFakeCanvasHost(EnvironmentId.make("environment-other"));
-      const token = yield* issueToken(threadA);
-
-      const result = yield* callTool(token, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
-        startLine: 1,
-        endLine: 5,
-      });
-
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain("No Draw-out window is connected");
-      expect(otherHost.requests).toHaveLength(0);
+      expect((yield* canvasOf(threadA)).cards[0]?.path).toBe("/srv/other/lib/x.ts");
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
@@ -317,82 +313,46 @@ it.effect("rejects a range that ends before it starts", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
-      const host = yield* connectFakeCanvasHost(environmentId);
       const token = yield* issueToken(threadA);
 
       const result = yield* callTool(token, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
+        path: "a.rb",
         startLine: 9,
-        endLine: 3,
+        endLine: 2,
       });
 
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain("endLine");
-      expect(host.requests).toHaveLength(0);
+      expect({ text: result.content[0]?.text, cards: (yield* canvasOf(threadA)).cards }).toEqual({
+        text: "endLine 2 is before startLine 9. Pass a range whose endLine is at or after its startLine.",
+        cards: [],
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect(
-  "drops a canvas host that does not answer in time, and tells the agent to retry once",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* serveMcp;
-        const live = yield* connectFakeCanvasHost(environmentId, { clientId: "live-window" });
-        // Newer, so it gets the request: an extension host whose window closed.
-        const stale = yield* connectFakeCanvasHost(environmentId, {
-          clientId: "closed-window",
-          answers: false,
-        });
-        const token = yield* issueToken(threadA);
-        const showCode = callTool(token, "canvas_show_code", {
-          path: "src/orders/cancel.ts",
-          startLine: 1,
-          endLine: 5,
-        });
-
-        const timedOut = yield* showCode.pipe(Effect.forkScoped);
-        yield* stale.received;
-        yield* TestClock.adjust("15 seconds");
-        const first = yield* Fiber.join(timedOut);
-        const retried = yield* showCode;
-
-        expect({
-          first: { isError: first.isError, text: first.content[0]?.text },
-          retried: retried.structuredContent,
-          requests: [stale.requests.length, live.requests.length],
-        }).toEqual({
-          first: {
-            isError: true,
-            text: "The Draw-out window did not answer within 15000ms and was disconnected. Another Draw-out window is connected: retry once.",
-          },
-          retried: { cardId: "card-1" },
-          requests: [1, 1],
-        });
-      }),
-    ).pipe(Effect.provide(TestLayer)),
-);
-
-it.effect("tells the agent not to retry when the window that timed out was the last one", () =>
+it.effect("pins, removes and keeps the user's edits on the canvas", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
-      const stale = yield* connectFakeCanvasHost(environmentId, { answers: false });
       const token = yield* issueToken(threadA);
+      const store = yield* CanvasStore.CanvasStore;
 
-      const timedOut = yield* callTool(token, "canvas_show_code", {
-        path: "src/orders/cancel.ts",
+      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+      yield* callTool(token, "canvas_show_code", {
+        path: "b.rb",
         startLine: 1,
-        endLine: 5,
-      }).pipe(Effect.forkScoped);
-      yield* stale.received;
-      yield* TestClock.adjust("15 seconds");
-      const result = yield* Fiber.join(timedOut);
+        endLine: 2,
+        after: "c1",
+      });
+      yield* callTool(token, "canvas_connect", { from: "c1", to: "c2" });
+      yield* store.edit(threadA, { type: "pin", cardId: "c2", x: 40, y: 900 });
+      yield* store.edit(threadA, { type: "remove", cardId: "c1" });
 
-      expect(result.content[0]?.text).toBe(
-        "The Draw-out window did not answer within 15000ms and was disconnected. No other Draw-out window is connected, so do not retry. Describe the code in text, or ask the user to open Draw-out.",
-      );
+      const canvas = yield* canvasOf(threadA);
+      expect({
+        cards: canvas.cards.map((card) => [card.id, card.after]),
+        arrows: canvas.arrows,
+        pinned: canvas.pinned,
+      }).toEqual({ cards: [["c2", null]], arrows: [], pinned: { c2: { x: 40, y: 900 } } });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

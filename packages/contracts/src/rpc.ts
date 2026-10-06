@@ -226,7 +226,14 @@ import {
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
-import { CanvasHost, CanvasHostResponse, CanvasHostStreamEvent } from "./canvas.ts";
+import {
+  CanvasEditInput,
+  CanvasHost,
+  CanvasHostResponse,
+  CanvasHostStreamEvent,
+  CanvasSubscribeInput,
+  ThreadCanvasState,
+} from "./canvas.ts";
 import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
@@ -367,6 +374,8 @@ export const WS_METHODS = {
   // Draw-out: canvas host methods
   canvasHostConnect: "canvasHost.connect",
   canvasHostRespond: "canvasHost.respond",
+  canvasSubscribe: "canvas.subscribe",
+  canvasEdit: "canvas.edit",
 
   // Device methods
   deviceConfigure: "device.configure",
@@ -1257,6 +1266,20 @@ const WsCanvasHostRespondRpc = Rpc.make(WS_METHODS.canvasHostRespond, {
   error: EnvironmentAuthorizationError,
 });
 
+// Draw-out canvas prototype: each thread's canvas, owned by the server.
+const WsCanvasSubscribeRpc = Rpc.make(WS_METHODS.canvasSubscribe, {
+  payload: CanvasSubscribeInput,
+  success: ThreadCanvasState,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsCanvasEditRpc = Rpc.make(WS_METHODS.canvasEdit, {
+  payload: CanvasEditInput,
+  success: ThreadCanvasState,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -1572,6 +1595,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationFocusHostRpc,
   WsCanvasHostConnectRpc,
   WsCanvasHostRespondRpc,
+  WsCanvasSubscribeRpc,
+  WsCanvasEditRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,

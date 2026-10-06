@@ -3,6 +3,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
+import { ThreadWithCanvas } from "../canvas/ThreadWithCanvas";
 import ChatView from "./ChatView";
 import { resolveDraftPromotionNavigationTarget, threadHasStarted } from "./ChatView.logic";
 import { waitForDraftHeroTransition } from "./chat/draftHeroTransition";
@@ -206,9 +207,17 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     );
   }
 
+  // Draw-out: the thread's canvas sits beside its chat.
+  const canvasThreadRef: ScopedThreadRef | null =
+    target.kind === "server"
+      ? target.threadRef
+      : draftSession
+        ? { environmentId: draftSession.environmentId, threadId: draftSession.threadId }
+        : null;
+
   return (
     <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none md:h-dvh">
-      {view}
+      <ThreadWithCanvas threadRef={view === null ? null : canvasThreadRef}>{view}</ThreadWithCanvas>
     </SidebarInset>
   );
 }

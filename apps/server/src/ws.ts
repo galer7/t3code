@@ -127,6 +127,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as CanvasHostBroker from "./mcp/CanvasHostBroker.ts";
+import * as CanvasStore from "./canvas/CanvasStore.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -503,6 +504,7 @@ const makeWsRpcLayer = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   canvasHostBroker: CanvasHostBroker.CanvasHostBroker["Service"],
+  canvasStore: CanvasStore.CanvasStore["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3543,6 +3545,15 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.canvasHostRespond, canvasHostBroker.respond(input), {
             "rpc.aggregate": "canvas-host",
           }),
+        // Draw-out canvas prototype: the server's canvas of a thread.
+        [WS_METHODS.canvasSubscribe]: (input) =>
+          observeRpcStream(WS_METHODS.canvasSubscribe, canvasStore.subscribe(input.threadId), {
+            "rpc.aggregate": "canvas",
+          }),
+        [WS_METHODS.canvasEdit]: (input) =>
+          observeRpcEffect(WS_METHODS.canvasEdit, canvasStore.edit(input.threadId, input.edit), {
+            "rpc.aggregate": "canvas",
+          }),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
@@ -3815,6 +3826,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const canvasHostBroker = yield* CanvasHostBroker.CanvasHostBroker;
+    const canvasStore = yield* CanvasStore.CanvasStore;
     const baseServerSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const config = yield* ServerConfig.ServerConfig;
     const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -3882,6 +3894,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               canvasHostBroker,
+              canvasStore,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),

@@ -1,14 +1,22 @@
 /**
  * Draw-out: the map of a thread's trace. Each card is an editor squeezed to
- * its range, packed on a map you scroll, drag and zoom. Drag a title to move
- * an editor and its edges to resize it; the others make room. A click raises
- * an editor over the map with the whole file and the language server; Esc
- * puts it back.
+ * its range, packed edge to edge on a map you scroll, drag and zoom. The
+ * packed editors reflow with the zoom. Drag a title to put an editor where you
+ * want it, or drag its edges to resize it: it then stays put, and the rest
+ * pack around it. A click raises an editor over the map with the whole file
+ * and the language server; Esc puts it back.
  */
 import "./canvas.css";
 
 import type { CanvasCardRecord, EnvironmentId, ThreadCanvasState } from "@t3tools/contracts";
-import { FootprintsIcon, MinusIcon, PlusIcon, RotateCcwIcon, ScanIcon } from "lucide-react";
+import {
+  FootprintsIcon,
+  MinusIcon,
+  PinIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  ScanIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
@@ -16,7 +24,7 @@ import { cn } from "~/lib/utils";
 
 import { LANE_STYLES } from "./laneStyles";
 import { readServerFile } from "./lsp";
-import { layoutMap, type MapItem, type MapLayoutKind, moveInOrder } from "./mapLayout";
+import { layoutMap, type MapItem, type MapRect, snapRect } from "./mapLayout";
 import { CODE_LINE_HEIGHT, DARK_THEME, LIGHT_THEME, modelFor, monaco } from "./monaco";
 import { useProjectPath } from "./projectPath";
 import { LspChip, type SideStep, setSideStepHandler, StepEditor } from "./TraceView";
@@ -31,16 +39,13 @@ const EDITOR_PAD = 6;
 const TILE_BORDER = 2;
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 2;
-const LAYOUT_KEY = "draw-out:map-layout";
 const ZOOM_KEY = "draw-out:map-zoom";
-const LAYOUTS: readonly { readonly kind: MapLayoutKind; readonly label: string }[] = [
-  { kind: "pack", label: "Pack" },
-  { kind: "rows", label: "Rows" },
-  { kind: "files", label: "Files" },
-];
+/** How close, in screen pixels, an edge must come to snap. */
+const SNAP_REACH = 14;
 
 interface MapPrefs {
-  readonly order: readonly string[];
+  /** Where the user put an editor. */
+  readonly pins: Readonly<Record<string, { readonly x: number; readonly y: number }>>;
   readonly sizes: Readonly<Record<string, { readonly width?: number; readonly lines?: number }>>;
 }
 
@@ -49,11 +54,11 @@ const prefsKey = (threadId: string) => `draw-out:map:${threadId}`;
 function readPrefs(threadId: string): MapPrefs {
   try {
     const value = JSON.parse(localStorage.getItem(prefsKey(threadId)) ?? "null");
-    if (value && Array.isArray(value.order)) return value as MapPrefs;
+    if (value && typeof value.pins === "object") return value as MapPrefs;
   } catch {
     // A bad entry starts the map fresh.
   }
-  return { order: [], sizes: {} };
+  return { pins: {}, sizes: {} };
 }
 
 const rangeLines = (card: CanvasCardRecord) => card.endLine - card.startLine + 1;
@@ -64,6 +69,13 @@ const clampZoom = (zoom: number) =>
 function headerHeight(card: CanvasCardRecord): number {
   return HEADER_HEIGHT + (card.caption ? CAPTION_HEIGHT : 0);
 }
+
+/** The code lines a tile of `height` shows. */
+const linesIn = (card: CanvasCardRecord, height: number) =>
+  Math.max(
+    1,
+    Math.floor((height - headerHeight(card) - 2 * EDITOR_PAD - TILE_BORDER) / CODE_LINE_HEIGHT),
+  );
 
 const loading = new Map<string, Promise<monaco.editor.ITextModel | null>>();
 
@@ -100,9 +112,6 @@ export function MapView(props: {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [prefs, setPrefs] = useState<MapPrefs>(() => readPrefs(threadId));
-  const [kind, setKind] = useState<MapLayoutKind>(
-    () => (localStorage.getItem(LAYOUT_KEY) as MapLayoutKind | null) ?? "pack",
-  );
   const [zoom, setZoom] = useState(() => clampZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1));
   const [view, setView] = useState({ width: 800, height: 600 });
   const [selected, setSelected] = useState<string | null>(null);
@@ -114,7 +123,6 @@ export function MapView(props: {
     () => localStorage.setItem(prefsKey(threadId), JSON.stringify(prefs)),
     [prefs, threadId],
   );
-  useEffect(() => localStorage.setItem(LAYOUT_KEY, kind), [kind]);
   useEffect(() => localStorage.setItem(ZOOM_KEY, String(zoom)), [zoom]);
 
   useEffect(() => {
@@ -131,11 +139,7 @@ export function MapView(props: {
     () => new Map(canvas.cards.map((card) => [card.id, card])),
     [canvas.cards],
   );
-  // The user's order first; cards the agent adds later go at the end.
-  const order = useMemo(() => {
-    const known = prefs.order.filter((id) => cardsById.has(id));
-    return [...known, ...canvas.cards.map((card) => card.id).filter((id) => !known.includes(id))];
-  }, [canvas.cards, cardsById, prefs.order]);
+  const order = useMemo(() => canvas.cards.map((card) => card.id), [canvas.cards]);
 
   const linesOf = useCallback(
     (card: CanvasCardRecord) => prefs.sizes[card.id]?.lines ?? rangeLines(card),
@@ -149,24 +153,20 @@ export function MapView(props: {
         return [
           {
             id,
-            path: card.path,
-            startLine: card.startLine,
+            pinned: prefs.pins[id],
             width: prefs.sizes[id]?.width ?? DEFAULT_WIDTH,
             height:
               headerHeight(card) + linesOf(card) * CODE_LINE_HEIGHT + 2 * EDITOR_PAD + TILE_BORDER,
           },
         ];
       }),
-    [cardsById, linesOf, order, prefs.sizes],
+    [cardsById, linesOf, order, prefs.pins, prefs.sizes],
   );
-  const layout = useMemo(
-    () => layoutMap(items, kind, view.width / zoom),
-    [items, kind, view.width, zoom],
-  );
+  const layout = useMemo(() => layoutMap(items, view.width / zoom), [items, view.width, zoom]);
 
   // Pointer handlers read the latest values through refs.
-  const latest = useRef({ layout, order, zoom, prefs });
-  latest.current = { layout, order, zoom, prefs };
+  const latest = useRef({ layout, zoom, prefs, view });
+  latest.current = { layout, zoom, prefs, view };
 
   const contentPoint = (clientX: number, clientY: number) => {
     const rect = contentRef.current!.getBoundingClientRect();
@@ -234,29 +234,30 @@ export function MapView(props: {
     if (!rect) return;
     const start = contentPoint(event.clientX, event.clientY);
     const offset = { x: start.x - rect.x, y: start.y - rect.y };
-    let lastTarget: string | null = null;
     track(
       event,
       (_dx, _dy, moveEvent) => {
+        const { layout: current, prefs: currentPrefs, zoom: scale, view: box } = latest.current;
         const point = contentPoint(moveEvent.clientX, moveEvent.clientY);
-        setDrag({ id, x: point.x - offset.x, y: point.y - offset.y });
-        let target: string | null = null;
-        for (const [otherId, other] of latest.current.layout.rects) {
-          if (otherId === id) continue;
-          if (
-            point.x >= other.x &&
-            point.x <= other.x + other.width &&
-            point.y >= other.y &&
-            point.y <= other.y + other.height
-          ) {
-            target = otherId;
-          }
+        const pinnedOthers: MapRect[] = [];
+        for (const [otherId, other] of current.rects) {
+          if (otherId !== id && currentPrefs.pins[otherId]) pinnedOthers.push(other);
         }
-        if (target && target !== lastTarget) {
-          const next = moveInOrder(latest.current.order, id, target);
-          setPrefs((current) => ({ ...current, order: next }));
-        }
-        lastTarget = target;
+        const edge = { x: box.width / scale, y: 0, width: 0, height: 0 };
+        const place = snapRect(
+          { x: point.x - offset.x, y: point.y - offset.y, width: rect.width, height: rect.height },
+          [...pinnedOthers, edge],
+          pinnedOthers,
+          SNAP_REACH / scale,
+        );
+        setDrag({ id, ...place });
+        setPrefs((previous) => ({
+          pins: { ...previous.pins, [id]: place },
+          sizes: {
+            ...previous.sizes,
+            [id]: { width: rect.width, lines: linesIn(cardOf(id), rect.height) },
+          },
+        }));
       },
       (moved) => {
         setDrag(null);
@@ -266,20 +267,32 @@ export function MapView(props: {
     );
   };
 
+  const cardOf = (id: string) => cardsById.get(id)!;
+
+  const unpin = (id: string) =>
+    setPrefs((previous) => {
+      const { [id]: _pin, ...pins } = previous.pins;
+      const { [id]: _size, ...sizes } = previous.sizes;
+      return { pins, sizes };
+    });
+
   const startResize = (
     event: React.PointerEvent,
     card: CanvasCardRecord,
     axes: "x" | "y" | "xy",
   ) => {
-    const startWidth = prefs.sizes[card.id]?.width ?? DEFAULT_WIDTH;
-    const startLines = linesOf(card);
+    // A resized editor stays where it is, at the size it shows now.
+    const rect = layout.rects.get(card.id);
+    if (!rect) return;
+    const startWidth = rect.width;
+    const startLines = linesIn(card, rect.height);
     setResizing(card.id);
     track(
       event,
       (dx, dy) => {
         const scale = latest.current.zoom;
         setPrefs((current) => ({
-          ...current,
+          pins: { ...current.pins, [card.id]: current.pins[card.id] ?? { x: rect.x, y: rect.y } },
           sizes: {
             ...current.sizes,
             [card.id]: {
@@ -346,7 +359,7 @@ export function MapView(props: {
   const fit = () => {
     let next = 1;
     while (next > MIN_ZOOM) {
-      const fitted = layoutMap(items, kind, view.width / next);
+      const fitted = layoutMap(items, view.width / next);
       if (fitted.width * next <= view.width + 1 && fitted.height * next <= view.height + 1) break;
       next = Math.round((next - 0.05) * 100) / 100;
     }
@@ -414,23 +427,6 @@ export function MapView(props: {
       className="relative flex h-full min-h-0 flex-col bg-background outline-none"
     >
       <div className="flex items-center gap-2 border-b border-border/60 py-2 pr-28 pl-4 text-xs">
-        <div className="flex rounded-md border border-border/70 p-0.5">
-          {LAYOUTS.map((layoutOption) => (
-            <button
-              key={layoutOption.kind}
-              type="button"
-              onClick={() => setKind(layoutOption.kind)}
-              className={cn(
-                "rounded px-2 py-0.5",
-                kind === layoutOption.kind
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {layoutOption.label}
-            </button>
-          ))}
-        </div>
         <div className="flex items-center rounded-md border border-border/70 p-0.5">
           <ToolButton label="Zoom out (-)" onClick={() => zoomTo(zoom / 1.25)}>
             <MinusIcon className="size-3.5" />
@@ -451,8 +447,8 @@ export function MapView(props: {
           </ToolButton>
         </div>
         <ToolButton
-          label="Reset order and sizes"
-          onClick={() => setPrefs({ order: [], sizes: {} })}
+          label="Put every editor back in the packing"
+          onClick={() => setPrefs({ pins: {}, sizes: {} })}
         >
           <RotateCcwIcon className="size-3.5" />
         </ToolButton>
@@ -498,7 +494,9 @@ export function MapView(props: {
                   environmentId={environmentId}
                   card={card}
                   path={projectPath(card.path)}
-                  lines={linesOf(card)}
+                  lines={linesIn(card, rect.height)}
+                  pinned={Boolean(prefs.pins[id])}
+                  onUnpin={() => unpin(id)}
                   x={drag && dragged ? drag.x : rect.x}
                   y={drag && dragged ? drag.y : rect.y}
                   width={rect.width}
@@ -541,6 +539,8 @@ function MapTile(props: {
   readonly width: number;
   readonly height: number;
   readonly dragged: boolean;
+  readonly pinned: boolean;
+  readonly onUnpin: () => void;
   readonly still: boolean;
   readonly selected: boolean;
   readonly onMoveStart: (event: React.PointerEvent) => void;
@@ -552,24 +552,41 @@ function MapTile(props: {
   return (
     <div
       className={cn(
-        "absolute top-0 left-0 flex flex-col overflow-hidden rounded-lg border bg-card",
-        dragged ? "z-20 shadow-2xl ring-1 ring-primary/40" : "shadow-sm",
-        selected ? "border-primary/70" : "border-border/70",
+        "drawout-map-tile absolute top-0 left-0 flex flex-col overflow-hidden border",
+        dragged && "z-20 shadow-2xl",
+        selected && "drawout-map-tile-selected z-10",
         !props.still && "transition-[transform,width,height] duration-200 ease-out",
       )}
-      style={{
-        width: props.width,
-        height: props.height,
-        transform: `translate(${props.x}px, ${props.y}px)`,
-      }}
+      style={
+        {
+          width: props.width,
+          height: props.height,
+          transform: `translate(${props.x}px, ${props.y}px)`,
+          "--lane": lane.color,
+        } as React.CSSProperties
+      }
     >
       <div
         onPointerDown={props.onMoveStart}
-        className="shrink-0 cursor-grab border-b border-border/50 px-3 active:cursor-grabbing"
+        className="drawout-map-tile-header shrink-0 cursor-grab px-3 active:cursor-grabbing"
         style={{ height: headerHeight(card) }}
       >
         <div className="flex h-[34px] items-center gap-2">
-          <span className="size-2 shrink-0 rounded-full" style={{ background: lane.color }} />
+          <span className="drawout-map-tile-lane shrink-0 text-2xs font-semibold uppercase">
+            {lane.label}
+          </span>
+          {props.pinned ? (
+            <button
+              type="button"
+              aria-label="Put back in the packing"
+              title="Put back in the packing"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={props.onUnpin}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+            >
+              <PinIcon className="size-3" />
+            </button>
+          ) : null}
           <span className="shrink-0 truncate text-sm font-semibold">
             {card.title ?? card.path.split("/").pop()}
           </span>

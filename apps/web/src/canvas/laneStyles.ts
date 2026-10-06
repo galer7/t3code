@@ -6,3 +6,6 @@ export const LANE_STYLES: Record<CanvasLane, { readonly label: string; readonly 
   infra: { label: "Infra", color: "#f59e0b" },
   external: { label: "External", color: "#34d399" },
 };
+
+/** Lanes left to right. External services are always last. */
+export const LANE_ORDER: readonly CanvasLane[] = ["frontend", "backend", "infra", "external"];

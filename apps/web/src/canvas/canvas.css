@@ -1,77 +1,17 @@
-/* Draw-out canvas. */
-.drawout-canvas .react-flow__node-code {
-  transition: transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.drawout-canvas .react-flow__node-code.dragging {
-  transition: none;
-}
-.drawout-canvas .react-flow__node-lane {
-  transition:
-    transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    height 320ms ease;
-  pointer-events: none;
-}
-.drawout-canvas .drawout-handle {
-  opacity: 0;
-  pointer-events: none;
-  width: 1px;
-  height: 1px;
-  min-width: 0;
-  min-height: 0;
-  border: 0;
-}
-.drawout-canvas .drawout-arrow .react-flow__edge-path {
-  stroke: color-mix(in oklab, var(--muted-foreground) 70%, transparent);
-  stroke-width: 1.6;
-}
-.drawout-canvas .drawout-arrow.selected .react-flow__edge-path,
-.drawout-canvas .drawout-arrow:hover .react-flow__edge-path {
-  stroke: var(--primary);
-}
-.drawout-canvas .react-flow__edge-textbg {
-  fill: var(--background);
-  stroke: var(--border);
-}
-.drawout-canvas .react-flow__edge-text {
-  fill: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-.drawout-canvas .react-flow__minimap {
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-.drawout-canvas .react-flow__controls {
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  box-shadow: none;
-}
+/* Draw-out: the step view. */
 .drawout-range-gutter {
   background: color-mix(in oklab, var(--primary) 70%, transparent);
   width: 3px !important;
   margin-left: 4px;
   border-radius: 2px;
 }
-.drawout-canvas .react-flow__minimap-node.drawout-mini-lane {
-  fill: transparent !important;
-}
-.drawout-canvas .react-flow__minimap-node.drawout-mini-frontend {
-  fill: #60a5fa !important;
-}
-.drawout-canvas .react-flow__minimap-node.drawout-mini-backend {
-  fill: #a78bfa !important;
-}
-.drawout-canvas .react-flow__minimap-node.drawout-mini-infra {
-  fill: #f59e0b !important;
-}
-.drawout-canvas .react-flow__minimap-node.drawout-mini-external {
-  fill: #34d399 !important;
-}
 .drawout-step-range {
   background: color-mix(in oklab, var(--primary) 7%, transparent);
 }
 .drawout-side-line {
   background: color-mix(in oklab, var(--primary) 14%, transparent);
+}
+/* The step view is for reading: no cursor. */
+.drawout-step-editor .cursors-layer {
+  visibility: hidden;
 }

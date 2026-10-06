@@ -1,15 +1,15 @@
 /**
  * Draw-out: a thread's trace. The step view by default; Esc shows the
- * overview canvas, and double-clicking a card there opens it as a step.
+ * overview, a sequence diagram of the steps, and a click there opens a step.
  */
 import { useAtomValue } from "@effect/atom-react";
 import type { ScopedThreadRef, ThreadCanvasState } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { canvasEnvironment } from "~/state/canvas";
 
-import ThreadCanvas from "./ThreadCanvas";
+import { SequenceView } from "./SequenceView";
 import { TraceView } from "./TraceView";
 
 export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
@@ -19,34 +19,36 @@ export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedT
       input: { threadId: threadRef.threadId },
     }),
   );
-  const [view, setView] = useState<{ mode: "steps" | "overview"; focusCardId: string | null }>({
-    mode: "steps",
-    focusCardId: null,
-  });
+  const [mode, setMode] = useState<"steps" | "overview">("steps");
+  const [focusCardId, setFocusCardId] = useState<string | null>(null);
+  const [currentCardId, setCurrentCardId] = useState<string | null>(null);
+  const onCardChange = useCallback((cardId: string) => setCurrentCardId(cardId), []);
   const canvas: ThreadCanvasState | null = AsyncResult.isSuccess(result) ? result.value : null;
 
-  if (view.mode === "overview") {
+  if (!canvas) return <div className="h-full bg-background" />;
+  if (mode === "overview") {
     return (
-      <div
-        className="h-full"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setView((current) => ({ ...current, mode: "steps" }));
+      <SequenceView
+        canvas={canvas}
+        currentCardId={currentCardId}
+        onOpen={(cardId) => {
+          setFocusCardId(cardId);
+          setMode("steps");
         }}
-      >
-        <ThreadCanvas
-          threadRef={threadRef}
-          onOpenCard={(cardId) => setView({ mode: "steps", focusCardId: cardId })}
-        />
-      </div>
+        onBack={() => {
+          setFocusCardId(currentCardId);
+          setMode("steps");
+        }}
+      />
     );
   }
-  if (!canvas) return <div className="h-full bg-background" />;
   return (
     <TraceView
       environmentId={threadRef.environmentId}
       canvas={canvas}
-      focusCardId={view.focusCardId}
-      onOverview={() => setView((current) => ({ ...current, mode: "overview" }))}
+      focusCardId={focusCardId}
+      onOverview={() => setMode("overview")}
+      onCardChange={onCardChange}
     />
   );
 }

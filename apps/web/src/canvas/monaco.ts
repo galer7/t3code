@@ -17,6 +17,8 @@ declare global {
 
 window.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
+export const CODE_LINE_HEIGHT = 20;
+
 export const DARK_THEME = "draw-out-dark";
 export const LIGHT_THEME = "draw-out-light";
 

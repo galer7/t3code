@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 
-import { CODE_LINE_HEIGHT } from "./canvasLayout";
 import { LANE_STYLES } from "./laneStyles";
 import {
   attachModel,
@@ -22,7 +21,14 @@ import {
   readServerFile,
   registerLspProviders,
 } from "./lsp";
-import { DARK_THEME, LIGHT_THEME, languageForPath, modelFor, monaco } from "./monaco";
+import {
+  CODE_LINE_HEIGHT,
+  DARK_THEME,
+  LIGHT_THEME,
+  languageForPath,
+  modelFor,
+  monaco,
+} from "./monaco";
 import { traceColumns } from "./traceSteps";
 
 interface SideStep {
@@ -58,8 +64,9 @@ export function TraceView(props: {
   readonly canvas: ThreadCanvasState;
   readonly focusCardId: string | null;
   readonly onOverview: () => void;
+  readonly onCardChange: (cardId: string) => void;
 }) {
-  const { environmentId, canvas, focusCardId, onOverview } = props;
+  const { environmentId, canvas, focusCardId, onOverview, onCardChange } = props;
   const columns = useMemo(() => traceColumns(canvas), [canvas]);
   const cardsById = useMemo(
     () => new Map(canvas.cards.map((card) => [card.id, card])),
@@ -85,6 +92,9 @@ export function TraceView(props: {
   const row = Math.min(place.row, Math.max((columns[column]?.length ?? 1) - 1, 0));
   const card = cardsById.get(columns[column]?.[row] ?? "") ?? null;
   const sideStep = sideSteps.at(-1) ?? null;
+  useEffect(() => {
+    if (card) onCardChange(card.id);
+  }, [card, onCardChange]);
 
   const move = useCallback(
     (direction: "left" | "right" | "up" | "down") => {
@@ -117,21 +127,9 @@ export function TraceView(props: {
     };
   }, []);
 
-  const onKeyDown = useCallback(
+  const onKeyDownCapture = useCallback(
     (event: React.KeyboardEvent) => {
-      const inEditor = (event.target as HTMLElement).closest(".monaco-editor") !== null;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (inEditor) {
-          zoneRef.current?.focus();
-        } else if (sideSteps.length > 0) {
-          setSideSteps((steps) => steps.slice(0, -1));
-        } else {
-          onOverview();
-        }
-        return;
-      }
-      if (inEditor && !event.altKey) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey) return;
       const directions: Record<string, "left" | "right" | "up" | "down"> = {
         ArrowLeft: "left",
         ArrowRight: "right",
@@ -141,15 +139,29 @@ export function TraceView(props: {
       const direction = directions[event.key];
       if (direction) {
         event.preventDefault();
+        event.stopPropagation();
         move(direction);
-      } else if (!inEditor && (event.key === "f" || event.key === "F")) {
+        return;
+      }
+      if (event.key === "Escape") {
+        // Esc first closes an open hover, peek or find box in the editor.
+        const zone = zoneRef.current;
+        const widgetOpen = zone?.querySelector(
+          ".monaco-hover:not(.hidden), .peekview-widget, .find-widget.visible, .suggest-widget.visible",
+        );
+        if (widgetOpen) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (sideSteps.length > 0) setSideSteps((steps) => steps.slice(0, -1));
+        else onOverview();
+        return;
+      }
+      const inEditor = (event.target as HTMLElement).closest(".monaco-editor") !== null;
+      if (!inEditor && (event.key === "f" || event.key === "F")) {
         event.preventDefault();
         void (document.fullscreenElement
           ? document.exitFullscreen()
           : zoneRef.current?.requestFullscreen());
-      } else if (!inEditor && event.key === "Enter") {
-        event.preventDefault();
-        (zoneRef.current?.querySelector(".monaco-editor textarea") as HTMLElement | null)?.focus();
       }
     },
     [move, onOverview, sideSteps.length],
@@ -178,30 +190,10 @@ export function TraceView(props: {
     <div
       ref={zoneRef}
       tabIndex={0}
-      onKeyDown={onKeyDown}
-      onKeyDownCapture={(event) => {
-        // Alt+arrows walk the trace even from inside the editor.
-        if (event.altKey && event.key.startsWith("Arrow")) {
-          event.preventDefault();
-          event.stopPropagation();
-          move(
-            ({ ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const)[
-              event.key as "ArrowLeft"
-            ],
-          );
-        }
-      }}
+      onKeyDownCapture={onKeyDownCapture}
       className="flex h-full min-h-0 flex-col bg-background outline-none"
     >
-      <div className="flex items-start gap-3 border-b border-border/60 px-5 py-3">
-        <button
-          type="button"
-          aria-label="Previous step"
-          onClick={() => move("left")}
-          className="mt-0.5 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <ChevronLeftIcon className="size-4" />
-        </button>
+      <div className="flex items-start gap-3 border-b border-border/60 py-3 pr-28 pl-5">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
             <span className="size-2 rounded-full" style={{ background: lane.color }} />
@@ -243,33 +235,6 @@ export function TraceView(props: {
             </>
           )}
         </div>
-        <LspChip environmentId={environmentId} path={sideStep?.path ?? card.path} />
-        <button
-          type="button"
-          aria-label="Overview"
-          title="Overview (Esc)"
-          onClick={onOverview}
-          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <WorkflowIcon className="size-4" />
-        </button>
-        <button
-          type="button"
-          aria-label="Fullscreen"
-          title="Fullscreen (F)"
-          onClick={() => void zoneRef.current?.requestFullscreen()}
-          className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <MaximizeIcon className="size-4" />
-        </button>
-        <button
-          type="button"
-          aria-label="Next step"
-          onClick={() => move("right")}
-          className="mt-0.5 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <ChevronRightIcon className="size-4" />
-        </button>
       </div>
       <StepEditor environmentId={environmentId} card={card} sideStep={sideStep} />
       <StepStrip
@@ -281,7 +246,24 @@ export function TraceView(props: {
           setPlace(next);
           zoneRef.current?.focus();
         }}
-      />
+      >
+        <LspChip environmentId={environmentId} path={sideStep?.path ?? card.path} />
+        <StripButton label="Previous step (←)" onClick={() => move("left")}>
+          <ChevronLeftIcon className="size-4" />
+        </StripButton>
+        <StripButton label="Next step (→)" onClick={() => move("right")}>
+          <ChevronRightIcon className="size-4" />
+        </StripButton>
+        <StripButton label="Overview (Esc)" onClick={onOverview}>
+          <WorkflowIcon className="size-4" />
+        </StripButton>
+        <StripButton
+          label="Fullscreen (F)"
+          onClick={() => void zoneRef.current?.requestFullscreen()}
+        >
+          <MaximizeIcon className="size-4" />
+        </StripButton>
+      </StepStrip>
     </div>
   );
 }
@@ -315,12 +297,13 @@ function StepEditor(props: {
         getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() ||
         "monospace",
       fontSize: 13,
-      lineHeight: CODE_LINE_HEIGHT + 1,
+      lineHeight: CODE_LINE_HEIGHT,
       minimap: { enabled: true, renderCharacters: false, scale: 1 },
       scrollBeyondLastLine: false,
       stickyScroll: { enabled: true },
       padding: { top: 8, bottom: 8 },
-      renderLineHighlight: "line",
+      renderLineHighlight: "none",
+      cursorStyle: "line-thin",
       contextmenu: true,
       definitionLinkOpensInPeek: false,
     });
@@ -379,7 +362,7 @@ function StepEditor(props: {
           },
         ]);
         editor.setScrollTop(
-          Math.max(0, editor.getTopForLineNumber(card.startLine) - 3 * (CODE_LINE_HEIGHT + 1)),
+          Math.max(0, editor.getTopForLineNumber(card.startLine) - 3 * CODE_LINE_HEIGHT),
         );
         editor.setPosition({ lineNumber: card.startLine, column: 1 });
       }
@@ -391,7 +374,7 @@ function StepEditor(props: {
 
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={hostRef} className="absolute inset-0" />
+      <div ref={hostRef} className="drawout-step-editor absolute inset-0" />
       {error ? (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
           {error}
@@ -414,12 +397,12 @@ function LspChip({
     let unsubscribe = () => {};
     let cancelled = false;
     const languageId = languageForPath(path);
+    setName(languageId === "plaintext" ? "This file" : languageId);
     void (async () => {
       if (languageId === "plaintext") {
         setStatus("none");
         return;
       }
-      setName(languageId);
       const pending = lspClientFor(environmentId, path, languageId);
       setStatus("starting");
       const client = await pending;
@@ -434,14 +417,14 @@ function LspChip({
   }, [environmentId, path]);
   const label =
     status === "ready"
-      ? `${name} language server`
+      ? `${name}: language server on`
       : status === "starting"
-        ? "Language server starting…"
-        : "No language server";
+        ? `${name}: language server starting…`
+        : `${name}: no language server, so no hover or definitions`;
   return (
     <span
       className={cn(
-        "mt-0.5 flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
+        "flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px]",
         status === "ready"
           ? "border-emerald-500/30 text-emerald-400"
           : status === "starting"
@@ -469,8 +452,9 @@ function StepStrip(props: {
   readonly cardsById: ReadonlyMap<string, CanvasCardRecord>;
   readonly current: { readonly column: number; readonly row: number };
   readonly onSelect: (place: { column: number; row: number }) => void;
+  readonly children: React.ReactNode;
 }) {
-  const { columns, cardsById, current, onSelect } = props;
+  const { columns, cardsById, current, onSelect, children } = props;
   return (
     <div className="flex items-center gap-3 border-t border-border/60 px-5 py-2">
       <div className="flex min-w-0 flex-1 items-start gap-1.5 overflow-x-auto">
@@ -502,9 +486,28 @@ function StepStrip(props: {
           </div>
         ))}
       </div>
-      <span className="shrink-0 text-[11px] text-muted-foreground">
-        ← → steps · ↑ ↓ branches · F12 definition · Esc back · F fullscreen
+      <span className="hidden shrink-0 text-[11px] text-muted-foreground xl:inline">
+        ← → steps · ↑ ↓ branches · Cmd-click definition · Esc back
       </span>
+      {children}
     </div>
+  );
+}
+
+function StripButton(props: {
+  readonly label: string;
+  readonly onClick: () => void;
+  readonly children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={props.label}
+      title={props.label}
+      onClick={props.onClick}
+      className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      {props.children}
+    </button>
   );
 }

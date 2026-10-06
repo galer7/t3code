@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -400,6 +401,85 @@ it.effect("pins, removes and keeps the user's edits on the canvas", () =>
         cards: canvas.cards.map((card) => card.id),
         pinned: canvas.pinned,
       }).toEqual({ cards: ["c2"], pinned: { c2: { x: 40, y: 900 } } });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "edits a card's lines and words, moves it, renames a trace, and edits and removes marks",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* serveMcp;
+        const token = yield* issueToken(threadA);
+
+        yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+        yield* callTool(token, "trace_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
+        yield* callTool(token, "trace_show_code", { path: "c.rb", startLine: 1, endLine: 2 });
+        yield* callTool(token, "trace_mark", { cardId: "c1", startLine: 1, text: "old" });
+        yield* callTool(token, "trace_mark", { cardId: "c3", startLine: 1, text: "gone" });
+
+        const edited = yield* callTool(token, "trace_edit_card", {
+          cardId: "c2",
+          startLine: 4,
+          endLine: 9,
+          caption: "Now the right lines.",
+          moveBefore: "c1",
+        });
+        const badRange = yield* callTool(token, "trace_edit_card", { cardId: "c2", endLine: 1 });
+        yield* callTool(token, "trace_edit_card", { cardId: "c3", remove: true });
+        yield* callTool(token, "trace_rename", { title: "Uploads" });
+        yield* callTool(token, "trace_edit_mark", { markId: "m1", text: "new", tone: "finding" });
+        const missingMark = yield* callTool(token, "trace_edit_mark", {
+          markId: "m2",
+          remove: true,
+        });
+
+        const canvas = yield* canvasOf(threadA);
+        expect({
+          edited: edited.structuredContent,
+          badRange: badRange.content[0]?.text,
+          cards: canvas.cards.map((card) => [card.id, card.startLine, card.endLine, card.caption]),
+          traces: canvas.traces,
+          marks: canvas.marks?.map((mark) => [mark.id, mark.text, mark.tone]),
+          missingMark: missingMark.content[0]?.text,
+        }).toEqual({
+          edited: { done: "changed card c2" },
+          badRange: "The edit leaves endLine 1 before startLine 4. Pass both lines.",
+          cards: [
+            ["c2", 4, 9, "Now the right lines."],
+            ["c1", 1, 2, null],
+          ],
+          traces: [{ id: "t1", title: "Uploads" }],
+          marks: [["m1", "new", "finding"]],
+          missingMark: "No mark m2 in this thread. Mark ids: m1.",
+        });
+      }),
+    ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("records the git repo of each card, so one trace can show two repos", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* serveMcp;
+      const token = yield* issueToken(threadA);
+      const fs = yield* FileSystem.FileSystem;
+      const site = yield* fs.makeTempDirectoryScoped({ prefix: "draw-out-site-" });
+      yield* fs.makeDirectory(`${site}/.git`);
+      yield* fs.makeDirectory(`${site}/src/pages`, { recursive: true });
+
+      yield* callTool(token, "trace_show_code", {
+        path: `${site}/src/pages/landing.tsx`,
+        startLine: 1,
+        endLine: 4,
+      });
+      yield* callTool(token, "trace_show_code", {
+        path: "/srv/no-repo/x.ts",
+        startLine: 1,
+        endLine: 2,
+      });
+
+      expect((yield* canvasOf(threadA)).cards.map((card) => card.repo)).toEqual([site, undefined]);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

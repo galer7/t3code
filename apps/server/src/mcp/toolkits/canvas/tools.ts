@@ -4,6 +4,7 @@
  */
 import {
   CanvasCardId,
+  CanvasEditResult,
   CanvasLane,
   CanvasMarkResult,
   CanvasMarkTone,
@@ -90,6 +91,52 @@ export const CanvasMarkInput = Schema.Struct({
 });
 export type CanvasMarkInput = typeof CanvasMarkInput.Type;
 
+export const CanvasEditCardInput = Schema.Struct({
+  cardId: CanvasCardId.annotate({ description: "The card to change." }),
+  path: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: "A new file: relative to this thread's workspace, or absolute.",
+    }),
+  ),
+  startLine: Schema.optional(PositiveInt.annotate({ description: "New first line, 1-based." })),
+  endLine: Schema.optional(PositiveInt.annotate({ description: "New last line, inclusive." })),
+  lane: Schema.optional(CanvasLane),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  caption: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
+  moveBefore: Schema.optional(
+    Schema.Union([CanvasCardId, Schema.Literal("end")]).annotate({
+      description:
+        "Move the card before this card id, which may be in another trace (the card then joins that trace), or `end` to put it last in its trace.",
+    }),
+  ),
+  remove: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "true removes the card and its marks. Remove a card only when it is wrong.",
+    }),
+  ),
+});
+export type CanvasEditCardInput = typeof CanvasEditCardInput.Type;
+
+export const CanvasRenameTraceInput = Schema.Struct({
+  trace: Schema.optional(
+    CanvasTraceId.annotate({ description: "The trace to rename. Default: the current trace." }),
+  ),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
+    description: "The new title, in a few words.",
+  }),
+});
+export type CanvasRenameTraceInput = typeof CanvasRenameTraceInput.Type;
+
+export const CanvasEditMarkInput = Schema.Struct({
+  markId: TrimmedNonEmptyString.annotate({ description: "The mark to change." }),
+  startLine: Schema.optional(PositiveInt),
+  endLine: Schema.optional(PositiveInt),
+  text: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(600))),
+  tone: Schema.optional(CanvasMarkTone),
+  remove: Schema.optional(Schema.Boolean.annotate({ description: "true removes the mark." })),
+});
+export type CanvasEditMarkInput = typeof CanvasEditMarkInput.Type;
+
 export class CanvasRangeInvalidError extends Schema.TaggedError<CanvasRangeInvalidError>()(
   "CanvasRangeInvalidError",
   { startLine: Schema.Int, endLine: Schema.Int },
@@ -124,6 +171,8 @@ export const CanvasToolError = Schema.Union([
   CanvasThreadLookupError,
   CanvasStore.CanvasCardNotFoundError,
   CanvasStore.CanvasTraceNotFoundError,
+  CanvasStore.CanvasMarkNotFoundError,
+  CanvasStore.CanvasEditRangeError,
 ]);
 export type CanvasToolError = typeof CanvasToolError.Type;
 
@@ -169,4 +218,51 @@ export const CanvasMarkTool = Tool.make("trace_mark", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool, CanvasStartTraceTool, CanvasMarkTool);
+export const CanvasEditCardTool = Tool.make("trace_edit_card", {
+  description:
+    "Change a card in a trace: its file, lines, lane, title or caption; move it before another card or to the end; or remove it when it is wrong. You cannot delete a trace.",
+  parameters: CanvasEditCardInput,
+  success: CanvasEditResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Edit a card in a trace")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasRenameTraceTool = Tool.make("trace_rename", {
+  description: "Give a trace a new title, when what it shows has changed.",
+  parameters: CanvasRenameTraceInput,
+  success: CanvasEditResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Rename a trace")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasEditMarkTool = Tool.make("trace_edit_mark", {
+  description: "Change a mark's lines, text or tone, or remove it when it is wrong.",
+  parameters: CanvasEditMarkInput,
+  success: CanvasEditResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Edit a mark")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasToolkit = Toolkit.make(
+  CanvasShowCodeTool,
+  CanvasStartTraceTool,
+  CanvasMarkTool,
+  CanvasEditCardTool,
+  CanvasRenameTraceTool,
+  CanvasEditMarkTool,
+);

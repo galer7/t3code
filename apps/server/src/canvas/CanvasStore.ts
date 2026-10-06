@@ -41,10 +41,35 @@ export class CanvasTraceNotFoundError extends Schema.TaggedError<CanvasTraceNotF
   }
 }
 
+export class CanvasMarkNotFoundError extends Schema.TaggedError<CanvasMarkNotFoundError>()(
+  "CanvasMarkNotFoundError",
+  { markId: Schema.String, known: Schema.String },
+) {
+  override get message(): string {
+    return `No mark ${this.markId} in this thread. Mark ids: ${this.known}.`;
+  }
+}
+
+export class CanvasEditRangeError extends Schema.TaggedError<CanvasEditRangeError>()(
+  "CanvasEditRangeError",
+  { startLine: Schema.Int, endLine: Schema.Int },
+) {
+  override get message(): string {
+    return `The edit leaves endLine ${this.endLine} before startLine ${this.startLine}. Pass both lines.`;
+  }
+}
+
+export type CanvasStoreError =
+  | CanvasCardNotFoundError
+  | CanvasTraceNotFoundError
+  | CanvasMarkNotFoundError
+  | CanvasEditRangeError;
+
 export type CanvasCommandResult =
   | { readonly cardId: string; readonly traceId: string }
   | { readonly traceId: string }
-  | { readonly markId: string };
+  | { readonly markId: string }
+  | { readonly done: string };
 
 export class CanvasStore extends Context.Service<
   CanvasStore,
@@ -56,7 +81,7 @@ export class CanvasStore extends Context.Service<
     readonly apply: (
       threadId: ThreadId,
       command: CanvasCommand,
-    ) => Effect.Effect<CanvasCommandResult, CanvasCardNotFoundError | CanvasTraceNotFoundError>;
+    ) => Effect.Effect<CanvasCommandResult, CanvasStoreError>;
     /** Applies a change the user made. An edit of a missing card does nothing. */
     readonly edit: (threadId: ThreadId, edit: CanvasEdit) => Effect.Effect<ThreadCanvasState>;
   }
@@ -119,10 +144,7 @@ const requireCard = (canvas: ThreadCanvasState, cardId: string) =>
 const applyCommand = (
   canvas: ThreadCanvasState,
   command: CanvasCommand,
-): Effect.Effect<
-  readonly [CanvasCommandResult, ThreadCanvasState],
-  CanvasCardNotFoundError | CanvasTraceNotFoundError
-> =>
+): Effect.Effect<readonly [CanvasCommandResult, ThreadCanvasState], CanvasStoreError> =>
   Effect.gen(function* () {
     switch (command.type) {
       case "showCode": {
@@ -173,6 +195,7 @@ const applyCommand = (
           caption: command.caption ?? null,
           after: null,
           trace: traceId,
+          ...(command.repo === undefined ? {} : { repo: command.repo }),
         };
         return [
           { cardId: id, traceId },
@@ -214,6 +237,101 @@ const applyCommand = (
             marks: [...(canvas.marks ?? []), mark],
             nextMark: (canvas.nextMark ?? 1) + 1,
           },
+        ] as const;
+      }
+      case "editCard": {
+        yield* requireCard(canvas, command.cardId);
+        const card = canvas.cards.find((other) => other.id === command.cardId)!;
+        if (command.remove) {
+          return [
+            { done: `removed card ${card.id}` },
+            {
+              ...canvas,
+              cards: canvas.cards.filter((other) => other.id !== card.id),
+              marks: (canvas.marks ?? []).filter((mark) => mark.cardId !== card.id),
+            },
+          ] as const;
+        }
+        const startLine = command.startLine ?? card.startLine;
+        const endLine = command.endLine ?? card.endLine;
+        if (endLine < startLine) return yield* new CanvasEditRangeError({ startLine, endLine });
+        let changed = {
+          ...card,
+          path: command.path ?? card.path,
+          ...(command.path === undefined
+            ? {}
+            : command.repo === undefined
+              ? { repo: undefined }
+              : { repo: command.repo }),
+          startLine,
+          endLine,
+          lane: command.lane ?? card.lane,
+          title: command.title ?? card.title,
+          caption: command.caption ?? card.caption,
+        };
+        let cards = canvas.cards.map((other) => (other.id === card.id ? changed : other));
+        if (command.moveBefore !== undefined) {
+          const rest = cards.filter((other) => other.id !== card.id);
+          if (command.moveBefore === "end") {
+            cards = [...rest, changed];
+          } else {
+            if (command.moveBefore === card.id)
+              return [{ done: "nothing to move" }, canvas] as const;
+            yield* requireCard(canvas, command.moveBefore);
+            const target = rest.find((other) => other.id === command.moveBefore)!;
+            changed = { ...changed, trace: target.trace };
+            const index = rest.indexOf(target);
+            cards = [...rest.slice(0, index), changed, ...rest.slice(index)];
+          }
+        }
+        return [{ done: `changed card ${card.id}` }, { ...canvas, cards }] as const;
+      }
+      case "renameTrace": {
+        const traceId = command.trace ?? canvas.currentTrace ?? null;
+        if (traceId === null || !(canvas.traces ?? []).some((trace) => trace.id === traceId)) {
+          return yield* new CanvasTraceNotFoundError({
+            traceId: traceId ?? "(none)",
+            known: traceIds(canvas),
+          });
+        }
+        return [
+          { done: `renamed trace ${traceId}` },
+          {
+            ...canvas,
+            traces: (canvas.traces ?? []).map((trace) =>
+              trace.id === traceId ? { ...trace, title: command.title } : trace,
+            ),
+          },
+        ] as const;
+      }
+      case "editMark": {
+        const marks = canvas.marks ?? [];
+        const mark = marks.find((other) => other.id === command.markId);
+        if (!mark) {
+          return yield* new CanvasMarkNotFoundError({
+            markId: command.markId,
+            known: marks.length === 0 ? "none yet" : marks.map((other) => other.id).join(", "),
+          });
+        }
+        if (command.remove) {
+          return [
+            { done: `removed mark ${mark.id}` },
+            { ...canvas, marks: marks.filter((other) => other.id !== mark.id) },
+          ] as const;
+        }
+        const startLine = command.startLine ?? mark.startLine;
+        const endLine = command.endLine ?? Math.max(startLine, mark.endLine);
+        if (endLine < startLine) return yield* new CanvasEditRangeError({ startLine, endLine });
+        const changed = {
+          ...mark,
+          startLine,
+          endLine,
+          text: command.text ?? mark.text,
+          tone: command.tone ?? mark.tone,
+        };
+        return [
+          { done: `changed mark ${mark.id}` },
+          { ...canvas, marks: marks.map((other) => (other.id === mark.id ? changed : other)) },
         ] as const;
       }
     }

@@ -49,6 +49,8 @@ export const CanvasShowCodeCommand = Schema.Struct({
   caption: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
   /** The trace the card joins. Default: the current trace. */
   trace: Schema.optional(CanvasTraceId),
+  /** The root of the git repo that holds the file, when there is one. */
+  repo: Schema.optional(TrimmedNonEmptyString),
 });
 export type CanvasShowCodeCommand = typeof CanvasShowCodeCommand.Type;
 
@@ -70,10 +72,51 @@ export const CanvasMarkCommand = Schema.Struct({
 });
 export type CanvasMarkCommand = typeof CanvasMarkCommand.Type;
 
+/** Change a card: its range, words or lane; move it; or remove it. */
+export const CanvasEditCardCommand = Schema.Struct({
+  type: Schema.Literal("editCard"),
+  cardId: CanvasCardId,
+  path: Schema.optional(TrimmedNonEmptyString),
+  /** The git repo of a new `path`. */
+  repo: Schema.optional(TrimmedNonEmptyString),
+  startLine: Schema.optional(PositiveInt),
+  endLine: Schema.optional(PositiveInt),
+  lane: Schema.optional(CanvasLane),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  caption: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
+  /** Put the card before this card, which may be in another trace, or at the end of its trace. */
+  moveBefore: Schema.optional(Schema.Union([CanvasCardId, Schema.Literal("end")])),
+  remove: Schema.optional(Schema.Boolean),
+});
+export type CanvasEditCardCommand = typeof CanvasEditCardCommand.Type;
+
+/** Give a trace a new title. Default: the current trace. */
+export const CanvasRenameTraceCommand = Schema.Struct({
+  type: Schema.Literal("renameTrace"),
+  trace: Schema.optional(CanvasTraceId),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+});
+export type CanvasRenameTraceCommand = typeof CanvasRenameTraceCommand.Type;
+
+/** Change a mark's lines, text or tone, or remove it. */
+export const CanvasEditMarkCommand = Schema.Struct({
+  type: Schema.Literal("editMark"),
+  markId: TrimmedNonEmptyString,
+  startLine: Schema.optional(PositiveInt),
+  endLine: Schema.optional(PositiveInt),
+  text: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(600))),
+  tone: Schema.optional(CanvasMarkTone),
+  remove: Schema.optional(Schema.Boolean),
+});
+export type CanvasEditMarkCommand = typeof CanvasEditMarkCommand.Type;
+
 export const CanvasCommand = Schema.Union([
   CanvasShowCodeCommand,
   CanvasStartTraceCommand,
   CanvasMarkCommand,
+  CanvasEditCardCommand,
+  CanvasRenameTraceCommand,
+  CanvasEditMarkCommand,
 ]);
 export type CanvasCommand = typeof CanvasCommand.Type;
 
@@ -92,6 +135,12 @@ export const CanvasMarkResult = Schema.Struct({
   markId: TrimmedNonEmptyString,
 });
 export type CanvasMarkResult = typeof CanvasMarkResult.Type;
+
+/** What an edit did, in a few words the agent reads. */
+export const CanvasEditResult = Schema.Struct({
+  done: Schema.String,
+});
+export type CanvasEditResult = typeof CanvasEditResult.Type;
 
 export const CanvasHostRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
@@ -143,6 +192,8 @@ export const CanvasCardRecord = Schema.Struct({
   after: Schema.NullOr(CanvasCardId),
   /** The trace the card belongs to. */
   trace: Schema.optional(CanvasTraceId),
+  /** The root of the git repo that holds the file, so a trace can span repos. */
+  repo: Schema.optional(Schema.String),
 });
 export type CanvasCardRecord = typeof CanvasCardRecord.Type;
 

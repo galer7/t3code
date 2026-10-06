@@ -15,31 +15,32 @@
 .drawout-step-editor .cursors-layer {
   visibility: hidden;
 }
-/* The gallery: each editor wears its lane's colour. */
-.drawout-gallery-tile {
-  background: color-mix(in oklab, var(--lane) 6%, var(--background));
-  border-color: color-mix(in oklab, var(--lane) 45%, var(--border));
+/* The step view: each column wears its lane's colour. */
+.drawout-step-column-header {
+  background: color-mix(in oklab, var(--lane) 16%, var(--background));
+  border-top: 3px solid color-mix(in oklab, var(--lane) 55%, transparent);
+  border-bottom: 1px solid color-mix(in oklab, var(--lane) 35%, transparent);
 }
-.drawout-gallery-tile-selected {
-  outline: 2px solid var(--lane);
-  outline-offset: -2px;
+.drawout-step-column-current .drawout-step-column-header {
+  background: color-mix(in oklab, var(--lane) 28%, var(--background));
+  border-top-color: var(--lane);
 }
-.drawout-gallery-tile-header {
-  background: color-mix(in oklab, var(--lane) 22%, var(--background));
-  border-bottom: 1px solid color-mix(in oklab, var(--lane) 40%, transparent);
+.drawout-step-column-side .drawout-step-column-header {
+  background: var(--muted);
+  border-top-style: dashed;
 }
-.drawout-gallery-tile-lane {
+.drawout-step-lane {
   color: var(--lane);
-  letter-spacing: 0.08em;
 }
-.drawout-gallery-tile .drawout-range-gutter {
+.drawout-step-number {
+  background: var(--lane);
+  color: var(--background);
+}
+.drawout-step-column .drawout-range-gutter {
   background: var(--lane);
 }
-.drawout-gallery-tile .drawout-step-range {
-  background: color-mix(in oklab, var(--lane) 10%, transparent);
-}
-.drawout-gallery-divider:hover {
-  background: color-mix(in oklab, var(--primary) 45%, transparent);
+.drawout-step-column .drawout-step-range {
+  background: color-mix(in oklab, var(--lane) 9%, transparent);
 }
 /* The step view: the agent's marks, as comments above their lines. */
 .drawout-mark-zone {
@@ -50,9 +51,7 @@
   background: color-mix(in oklab, var(--tone) 8%, transparent);
   color: color-mix(in oklab, var(--tone) 85%, var(--foreground));
   font-family: var(--font-mono);
-  font-size: 12.5px;
   font-style: italic;
-  line-height: 20px;
   white-space: pre-wrap;
   overflow: hidden;
 }

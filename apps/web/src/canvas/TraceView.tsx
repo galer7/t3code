@@ -15,7 +15,14 @@ import type {
   EnvironmentId,
   ThreadCanvasState,
 } from "@t3tools/contracts";
-import { MinusIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  MinusIcon,
+  PlusIcon,
+  SearchIcon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
@@ -120,6 +127,54 @@ export function TraceView(props: {
     return result;
   }, [canvas.cards, sideSteps]);
   const width = Math.round(BASE_WIDTH * zoom);
+
+  // Only the columns on screen and one on each side hold an editor; the rest
+  // wait with their header. Many full editors make every frame slow.
+  const [shown, setShown] = useState({ from: 0, to: 2 });
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const from = Math.floor(strip.scrollLeft / width);
+      const to = Math.ceil((strip.scrollLeft + strip.clientWidth) / width) - 1;
+      setShown((previous) =>
+        previous.from === from && previous.to === to ? previous : { from, to },
+      );
+    };
+    const onScroll = () => {
+      frame ||= requestAnimationFrame(measure);
+    };
+    measure();
+    strip.addEventListener("scroll", onScroll, { passive: true });
+    const observer = new ResizeObserver(onScroll);
+    observer.observe(strip);
+    return () => {
+      strip.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [width, canvas.cards.length]);
+
+  // Read every card's file up front, so search covers columns with no editor yet.
+  const paths = useMemo(() => [...new Set(canvas.cards.map((card) => card.path))], [canvas.cards]);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      for (const path of paths) {
+        if (cancelled) return;
+        if (monaco.editor.getModel(monaco.Uri.file(path))) continue;
+        const contents = await readServerFile(environmentId, path);
+        if (!cancelled && contents !== null && !monaco.editor.getModel(monaco.Uri.file(path))) {
+          modelFor(path, contents);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [environmentId, paths]);
   const fontSize = Math.round(BASE_FONT * zoom * 2) / 2;
 
   const scrollToColumn = useCallback((key: string) => {
@@ -278,29 +333,7 @@ export function TraceView(props: {
     >
       <div className="flex items-center gap-3 border-b border-border/60 py-2 pr-28 pl-4 text-xs">
         {props.picker}
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1">
-          {canvas.cards.map((card) => {
-            const active = currentColumn.key === card.id;
-            return (
-              <button
-                key={card.id}
-                type="button"
-                title={card.title ?? card.path}
-                aria-label={card.title ?? card.path}
-                onClick={() => scrollToColumn(card.id)}
-                className="group flex h-4 shrink-0 items-center px-0.5"
-              >
-                <span
-                  className={cn(
-                    "block h-1 w-5 rounded-full transition-all",
-                    active ? "h-1.5 w-7" : "opacity-45 group-hover:opacity-90",
-                  )}
-                  style={{ background: styleOf(card).color }}
-                />
-              </button>
-            );
-          })}
-        </div>
+        <div className="flex-1" />
         <ToolButton label="Search the trace (Cmd-K or /)" onClick={() => setSearching(true)}>
           <SearchIcon className="size-3.5" />
         </ToolButton>
@@ -325,7 +358,52 @@ export function TraceView(props: {
         </div>
         <LspChip environmentId={environmentId} path={currentPath} />
       </div>
-      <div ref={stripRef} className="flex min-h-0 flex-1 overflow-x-auto overflow-y-hidden">
+      <div className="flex items-center gap-1 border-b border-border/60 px-2 py-1">
+        <ToolButton label="Previous card (←)" onClick={() => move(-1)}>
+          <ChevronLeftIcon className="size-4" />
+        </ToolButton>
+        <div className="flex min-w-0 flex-1 items-end gap-1 overflow-x-auto">
+          {canvas.cards.map((card, index) => {
+            const active = currentColumn.key === card.id;
+            const onScreen =
+              columns.findIndex((column) => column.key === card.id) >= shown.from &&
+              columns.findIndex((column) => column.key === card.id) <= shown.to;
+            return (
+              <button
+                key={card.id}
+                type="button"
+                title={card.title ?? card.path}
+                aria-label={`${index + 1}: ${card.title ?? card.path}`}
+                onClick={() => scrollToColumn(card.id)}
+                className={cn(
+                  "group flex shrink-0 flex-col items-center gap-0.5 px-0.5 pb-0.5 tabular-nums",
+                  active
+                    ? "font-semibold text-foreground"
+                    : onScreen
+                      ? "text-foreground/80"
+                      : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <span className="text-xs leading-none">{index + 1}</span>
+                <span
+                  className={cn(
+                    "block h-[3px] w-5 rounded-full",
+                    !active && !onScreen && "opacity-40 group-hover:opacity-80",
+                  )}
+                  style={{ background: styleOf(card).color }}
+                />
+              </button>
+            );
+          })}
+        </div>
+        <ToolButton label="Next card (→)" onClick={() => move(1)}>
+          <ChevronRightIcon className="size-4" />
+        </ToolButton>
+      </div>
+      <div
+        ref={stripRef}
+        className="flex min-h-0 flex-1 snap-x snap-mandatory overflow-x-auto overflow-y-hidden"
+      >
         {columns.map((column, index) => (
           <StepColumn
             key={column.key}
@@ -338,6 +416,7 @@ export function TraceView(props: {
             width={width}
             fontSize={fontSize}
             current={currentColumn.key === column.key}
+            live={index >= shown.from - 1 && index <= shown.to + 1}
             projectPath={projectPath}
             marks={
               column.kind === "card"
@@ -557,6 +636,8 @@ function StepColumn(props: {
   readonly projectPath: (path: string, repo?: string) => string;
   readonly marks: readonly CanvasMarkRecord[];
   readonly onFocus: () => void;
+  /** Whether the column is near the screen, so it holds a live editor. */
+  readonly live: boolean;
   readonly onClose: (() => void) | null;
 }) {
   const { column } = props;
@@ -573,7 +654,7 @@ function StepColumn(props: {
       data-column={column.key}
       onPointerDownCapture={props.onFocus}
       className={cn(
-        "drawout-step-column flex h-full shrink-0 flex-col border-r border-border/60",
+        "drawout-step-column flex h-full shrink-0 snap-start flex-col border-r border-border/60",
         props.current && "drawout-step-column-current",
         column.kind === "side" && "drawout-step-column-side",
       )}
@@ -622,15 +703,19 @@ function StepColumn(props: {
           <p className="mt-1 line-clamp-3 text-sm leading-5 text-foreground/80">{card.caption}</p>
         ) : null}
       </div>
-      <ColumnEditor
-        environmentId={props.environmentId}
-        columnKey={column.key}
-        path={path}
-        range={card ? { start: card.startLine, end: card.endLine } : null}
-        line={column.kind === "side" ? column.step.line : null}
-        marks={props.marks}
-        fontSize={props.fontSize}
-      />
+      {props.live ? (
+        <ColumnEditor
+          environmentId={props.environmentId}
+          columnKey={column.key}
+          path={path}
+          range={card ? { start: card.startLine, end: card.endLine } : null}
+          line={column.kind === "side" ? column.step.line : null}
+          marks={props.marks}
+          fontSize={props.fontSize}
+        />
+      ) : (
+        <div className="flex-1" />
+      )}
     </div>
   );
 }
@@ -723,6 +808,9 @@ function ColumnEditor(props: {
       overviewRulerLanes: 2,
       // A wheel the file cannot use goes on to the strip, which scrolls sideways.
       scrollbar: { alwaysConsumeMouseWheel: false, horizontal: "hidden" },
+      // The EditContext input measures the page on every frame, which makes
+      // scrolling slow with several editors; these editors are read-only.
+      editContext: false,
     });
     columnOfEditor.set(editor, props.columnKey);
     editorOfColumn.set(props.columnKey, editor);

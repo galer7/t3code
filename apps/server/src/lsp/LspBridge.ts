@@ -59,7 +59,11 @@ function findRoot(filePath: string, markers: readonly string[]): string | null {
 /** A systemd unit's PATH lacks the user's tool shims, where language servers live. */
 function languageServerEnv(): NodeJS.ProcessEnv {
   const home = NodeOs.homedir();
-  const extra = [NodePath.join(home, ".local/share/mise/shims"), NodePath.join(home, ".local/bin")];
+  const extra = [
+    NodePath.join(home, ".local/share/mise/shims"),
+    NodePath.join(home, ".local/bin"),
+    NodePath.join(home, ".npm-global/bin"),
+  ];
   return { ...process.env, PATH: [...extra, process.env.PATH ?? ""].join(":") };
 }
 

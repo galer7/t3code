@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "~/lib/utils";
 
 import { LANE_ORDER, LANE_STYLES } from "./laneStyles";
+import { useProjectPath } from "./projectPath";
 import { traceColumns } from "./traceSteps";
 
 const ROW_HEIGHT = 116;
@@ -29,6 +30,7 @@ export function SequenceView(props: {
 }) {
   const { canvas, currentCardId, onOpen, onBack } = props;
   const zoneRef = useRef<HTMLDivElement | null>(null);
+  const projectPath = useProjectPath();
   const [width, setWidth] = useState(800);
 
   const rows = useMemo<Row[]>(() => {
@@ -240,9 +242,13 @@ export function SequenceView(props: {
                   {row.card.title ?? row.card.path.split("/").pop()}
                 </span>
               </div>
-              <span className="w-full truncate font-mono text-[11px] text-muted-foreground">
-                {row.card.path.split("/").slice(-2).join("/")}:{row.card.startLine}–
-                {row.card.endLine}
+              <span
+                className="w-full truncate font-mono text-[11px] text-muted-foreground"
+                style={{ direction: "rtl", textAlign: "left" }}
+              >
+                <bdi>
+                  {projectPath(row.card.path)}:{row.card.startLine}–{row.card.endLine}
+                </bdi>
               </span>
               {row.card.caption ? (
                 <span className="line-clamp-2 text-[13px] leading-[17px] text-muted-foreground">

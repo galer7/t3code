@@ -40,6 +40,14 @@ export async function readServerFile(
   return result._tag === "Success" ? result.value.contents : null;
 }
 
+/** The LSP language id: React files have their own, unlike Monaco's. */
+function lspLanguageId(model: monaco.editor.ITextModel): string {
+  const path = model.uri.path;
+  if (path.endsWith(".tsx")) return "typescriptreact";
+  if (path.endsWith(".jsx")) return "javascriptreact";
+  return model.getLanguageId();
+}
+
 class LspClient {
   rootPath: string | null = null;
   status: LspStatus = "starting";
@@ -177,7 +185,7 @@ class LspClient {
     if (this.opened.has(uri)) return;
     this.opened.add(uri);
     this.notify("textDocument/didOpen", {
-      textDocument: { uri, languageId: this.languageId, version: 1, text: model.getValue() },
+      textDocument: { uri, languageId: lspLanguageId(model), version: 1, text: model.getValue() },
     });
   }
 }

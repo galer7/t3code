@@ -36,3 +36,49 @@ export function traceColumns(canvas: ThreadCanvasState): string[][] {
   }
   return columns.filter((column) => column.length > 0);
 }
+
+export interface TracePlace {
+  readonly column: number;
+  readonly row: number;
+}
+
+/**
+ * The step ← or → leads to. It follows the current card's own arrow into the
+ * next (or previous) step, so a branch stays on its path. With no such arrow,
+ * it keeps the same row when that row exists, else the first row.
+ */
+export function stepAcross(
+  canvas: ThreadCanvasState,
+  columns: readonly (readonly string[])[],
+  place: TracePlace,
+  direction: "left" | "right",
+): TracePlace {
+  const target = direction === "right" ? place.column + 1 : place.column - 1;
+  const targetColumn = columns[target];
+  if (!targetColumn) return place;
+  const current = columns[place.column]?.[place.row];
+  const linked = canvas.arrows
+    .flatMap((arrow) =>
+      direction === "right"
+        ? arrow.from === current
+          ? [arrow.to]
+          : []
+        : arrow.to === current
+          ? [arrow.from]
+          : [],
+    )
+    .concat(
+      canvas.cards.flatMap((card) =>
+        direction === "right"
+          ? card.after === current
+            ? [card.id]
+            : []
+          : card.id === current && card.after
+            ? [card.after]
+            : [],
+      ),
+    );
+  const followed = targetColumn.findIndex((id) => linked.includes(id));
+  if (followed >= 0) return { column: target, row: followed };
+  return { column: target, row: place.row < targetColumn.length ? place.row : 0 };
+}

@@ -6,7 +6,7 @@
  */
 import * as monaco from "monaco-editor/editor";
 import "./monacoContribs";
-import "monaco-editor/languages/register.all";
+import "monaco-editor/languages/definitions/register.all";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 
 declare global {

@@ -29,7 +29,8 @@ import {
   modelFor,
   monaco,
 } from "./monaco";
-import { traceColumns } from "./traceSteps";
+import { useProjectPath } from "./projectPath";
+import { stepAcross, traceColumns } from "./traceSteps";
 
 interface SideStep {
   readonly path: string;
@@ -75,6 +76,7 @@ export function TraceView(props: {
   const [place, setPlace] = useState({ column: 0, row: 0 });
   const [sideSteps, setSideSteps] = useState<SideStep[]>([]);
   const zoneRef = useRef<HTMLDivElement | null>(null);
+  const projectPath = useProjectPath();
 
   // Open at the card the overview asked for.
   useEffect(() => {
@@ -104,9 +106,9 @@ export function TraceView(props: {
       }
       setSideSteps([]);
       setPlace(({ column: currentColumn, row: currentRow }) => {
-        if (direction === "right")
-          return { column: Math.min(currentColumn + 1, columns.length - 1), row: 0 };
-        if (direction === "left") return { column: Math.max(currentColumn - 1, 0), row: 0 };
+        if (direction === "right" || direction === "left") {
+          return stepAcross(canvas, columns, { column: currentColumn, row: currentRow }, direction);
+        }
         const height = columns[currentColumn]?.length ?? 1;
         return {
           column: currentColumn,
@@ -117,7 +119,7 @@ export function TraceView(props: {
         };
       });
     },
-    [columns, sideSteps.length],
+    [canvas, columns, sideSteps.length],
   );
 
   useEffect(() => {
@@ -209,10 +211,15 @@ export function TraceView(props: {
                 ? sideStep.path.split("/").pop()
                 : (card.title ?? card.path.split("/").pop())}
             </h2>
-            <span className="truncate font-mono text-xs text-muted-foreground">
-              {sideStep
-                ? `${shortPath(sideStep.path)}:${sideStep.line}`
-                : `${shortPath(card.path)}:${card.startLine}–${card.endLine}`}
+            <span
+              className="truncate font-mono text-xs text-muted-foreground"
+              style={{ direction: "rtl", textAlign: "left" }}
+            >
+              <bdi>
+                {sideStep
+                  ? `${projectPath(sideStep.path)}:${sideStep.line}`
+                  : `${projectPath(card.path)}:${card.startLine}–${card.endLine}`}
+              </bdi>
             </span>
           </div>
           {sideStep ? (
@@ -266,10 +273,6 @@ export function TraceView(props: {
       </StepStrip>
     </div>
   );
-}
-
-function shortPath(path: string): string {
-  return path.split("/").slice(-3).join("/");
 }
 
 function StepEditor(props: {

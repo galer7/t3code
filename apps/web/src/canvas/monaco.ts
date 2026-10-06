@@ -1,9 +1,11 @@
 /**
- * Draw-out: Monaco for code cards. Only the core editor and the syntax
- * definitions load, so every language gets highlighting and no language
- * service reports errors about imports a card cannot see.
+ * Draw-out: Monaco for code cards and steps. The core editor, its editor
+ * features and the syntax definitions load, so every language gets
+ * highlighting; language smarts come from the server's language servers, and
+ * no browser-side language service reports errors about imports it cannot see.
  */
 import * as monaco from "monaco-editor/editor";
+import "./monacoContribs";
 import "monaco-editor/languages/register.all";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 
@@ -29,6 +31,9 @@ monaco.editor.defineTheme(DARK_THEME, {
     "editorLineNumber.foreground": "#ffffff38",
     "editorLineNumber.activeForeground": "#ffffff80",
     "scrollbarSlider.background": "#ffffff14",
+    "editorStickyScroll.background": "#0d0d0e",
+    "editorStickyScrollHover.background": "#18181b",
+    "editorStickyScroll.shadow": "#00000080",
   },
 });
 monaco.editor.defineTheme(LIGHT_THEME, {
@@ -41,6 +46,8 @@ monaco.editor.defineTheme(LIGHT_THEME, {
     "editor.lineHighlightBackground": "#0000000a",
     "editorLineNumber.foreground": "#00000040",
     "scrollbarSlider.background": "#00000014",
+    "editorStickyScroll.background": "#ffffff",
+    "editorStickyScrollHover.background": "#f4f4f5",
   },
 });
 

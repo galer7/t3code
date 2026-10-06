@@ -234,6 +234,7 @@ import {
   CanvasSubscribeInput,
   ThreadCanvasState,
 } from "./canvas.ts";
+import { LspConnectInput, LspSendInput, LspStreamEvent } from "./lsp.ts";
 import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
@@ -376,6 +377,8 @@ export const WS_METHODS = {
   canvasHostRespond: "canvasHost.respond",
   canvasSubscribe: "canvas.subscribe",
   canvasEdit: "canvas.edit",
+  lspConnect: "lsp.connect",
+  lspSend: "lsp.send",
 
   // Device methods
   deviceConfigure: "device.configure",
@@ -1280,6 +1283,19 @@ const WsCanvasEditRpc = Rpc.make(WS_METHODS.canvasEdit, {
   error: EnvironmentAuthorizationError,
 });
 
+// Draw-out canvas prototype: a browser editor's language server.
+const WsLspConnectRpc = Rpc.make(WS_METHODS.lspConnect, {
+  payload: LspConnectInput,
+  success: LspStreamEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const WsLspSendRpc = Rpc.make(WS_METHODS.lspSend, {
+  payload: LspSendInput,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -1597,6 +1613,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsCanvasHostRespondRpc,
   WsCanvasSubscribeRpc,
   WsCanvasEditRpc,
+  WsLspConnectRpc,
+  WsLspSendRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,

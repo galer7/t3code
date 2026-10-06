@@ -69,3 +69,9 @@
 .drawout-canvas .react-flow__minimap-node.drawout-mini-external {
   fill: #34d399 !important;
 }
+.drawout-step-range {
+  background: color-mix(in oklab, var(--primary) 7%, transparent);
+}
+.drawout-side-line {
+  background: color-mix(in oklab, var(--primary) 14%, transparent);
+}

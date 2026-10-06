@@ -9,7 +9,7 @@ import { lazy, type ReactNode, Suspense, useCallback, useEffect, useState } from
 
 import { cn } from "~/lib/utils";
 
-const ThreadCanvas = lazy(() => import("./ThreadCanvas"));
+const ThreadTrace = lazy(() => import("./ThreadTrace"));
 
 const WIDTH_KEY = "draw-out:chat-width";
 const OPEN_KEY = "draw-out:canvas-open";
@@ -77,7 +77,7 @@ export function ThreadWithCanvas(props: {
 
   const canvas = (
     <Suspense fallback={<div className="h-full w-full bg-background" />}>
-      <ThreadCanvas threadRef={threadRef} />
+      <ThreadTrace threadRef={threadRef} />
     </Suspense>
   );
 

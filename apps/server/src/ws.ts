@@ -128,6 +128,7 @@ import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as CanvasHostBroker from "./mcp/CanvasHostBroker.ts";
 import * as CanvasStore from "./canvas/CanvasStore.ts";
+import * as LspBridge from "./lsp/LspBridge.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -505,6 +506,7 @@ const makeWsRpcLayer = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   canvasHostBroker: CanvasHostBroker.CanvasHostBroker["Service"],
   canvasStore: CanvasStore.CanvasStore["Service"],
+  lspBridge: LspBridge.LspBridge["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3550,6 +3552,14 @@ const makeWsRpcLayer = (
           observeRpcStream(WS_METHODS.canvasSubscribe, canvasStore.subscribe(input.threadId), {
             "rpc.aggregate": "canvas",
           }),
+        [WS_METHODS.lspConnect]: (input) =>
+          observeRpcStream(WS_METHODS.lspConnect, lspBridge.connect(input), {
+            "rpc.aggregate": "lsp",
+          }),
+        [WS_METHODS.lspSend]: (input) =>
+          observeRpcEffect(WS_METHODS.lspSend, lspBridge.send(input.sessionId, input.message), {
+            "rpc.aggregate": "lsp",
+          }),
         [WS_METHODS.canvasEdit]: (input) =>
           observeRpcEffect(WS_METHODS.canvasEdit, canvasStore.edit(input.threadId, input.edit), {
             "rpc.aggregate": "canvas",
@@ -3827,6 +3837,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const canvasHostBroker = yield* CanvasHostBroker.CanvasHostBroker;
     const canvasStore = yield* CanvasStore.CanvasStore;
+    const lspBridge = yield* LspBridge.LspBridge;
     const baseServerSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const config = yield* ServerConfig.ServerConfig;
     const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -3895,6 +3906,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               previewAutomationBroker,
               canvasHostBroker,
               canvasStore,
+              lspBridge,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),

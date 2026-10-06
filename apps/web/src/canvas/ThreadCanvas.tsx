@@ -61,15 +61,24 @@ function LaneView({ data }: NodeProps<LaneNode>) {
 
 const nodeTypes = { code: CodeCardView, lane: LaneView };
 
-export default function ThreadCanvas(props: { readonly threadRef: ScopedThreadRef }) {
+export default function ThreadCanvas(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly onOpenCard?: (cardId: string) => void;
+}) {
   return (
     <ReactFlowProvider>
-      <ThreadCanvasFlow threadRef={props.threadRef} />
+      <ThreadCanvasFlow threadRef={props.threadRef} onOpenCard={props.onOpenCard} />
     </ReactFlowProvider>
   );
 }
 
-function ThreadCanvasFlow({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
+function ThreadCanvasFlow({
+  threadRef,
+  onOpenCard,
+}: {
+  readonly threadRef: ScopedThreadRef;
+  readonly onOpenCard: ((cardId: string) => void) | undefined;
+}) {
   const canvasResult = useAtomValue(
     canvasEnvironment.canvas({
       environmentId: threadRef.environmentId,
@@ -260,6 +269,9 @@ function ThreadCanvasFlow({ threadRef }: { readonly threadRef: ScopedThreadRef }
         edges={edges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
+        onNodeDoubleClick={(_event, node) => {
+          if (node.type === "code") onOpenCard?.(node.id);
+        }}
         colorMode={resolvedTheme === "dark" ? "dark" : "light"}
         minZoom={0.08}
         maxZoom={1.6}

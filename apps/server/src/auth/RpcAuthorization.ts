@@ -163,6 +163,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.canvasHostRespond]: AuthOrchestrationOperateScope,
   [WS_METHODS.canvasSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.canvasEdit]: AuthOrchestrationOperateScope,
+  [WS_METHODS.lspConnect]: AuthOrchestrationOperateScope,
+  [WS_METHODS.lspSend]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribePreviewEvents]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeDiscoveredLocalServers]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceConfigure]: AuthOrchestrationOperateScope,

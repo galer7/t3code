@@ -1,19 +1,24 @@
 /**
  * Draw-out: a thread's traces. A list picks the trace, and the step view shows
  * its cards side by side. The list follows the agent: when it starts a trace
- * or adds to another, that trace shows.
+ * or adds to another, that trace shows. A card link in the chat shows its
+ * card. Cards take their colour from the repo's areas, else their lane.
  */
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import type { ScopedThreadRef, ThreadCanvasState } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Trash2Icon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useActiveProjectTarget } from "~/hooks/useActiveProjectTarget";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { canvasEnvironment } from "~/state/canvas";
 
+import { cardStyle, repoRootOf } from "./areas";
+import { onCardReveal } from "./cardRef";
 import { TraceView } from "./TraceView";
+import { useAreas } from "./useAreas";
 import { traceCards } from "./traceSteps";
 
 export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
@@ -25,6 +30,34 @@ export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedT
   );
   const canvas: ThreadCanvasState | null = AsyncResult.isSuccess(result) ? result.value : null;
   const [chosen, setChosen] = useState<string | null>(null);
+  const [reveal, setReveal] = useState<{ cardId: string; at: number } | null>(null);
+  const cwd = useActiveProjectTarget()?.cwd ?? null;
+  const roots = useMemo(
+    () =>
+      (canvas?.cards ?? []).flatMap((card) => {
+        const root = repoRootOf(card, cwd);
+        return root ? [root] : [];
+      }),
+    [canvas?.cards, cwd],
+  );
+  const areas = useAreas(threadRef.environmentId, roots);
+  const styleOf = useCallback(
+    (card: Parameters<typeof cardStyle>[0]) => cardStyle(card, areas, cwd),
+    [areas, cwd],
+  );
+
+  const cards = canvas?.cards;
+  useEffect(
+    () =>
+      onCardReveal((request) => {
+        if (request.threadId !== threadRef.threadId) return;
+        const card = cards?.find((other) => other.id === request.cardId);
+        if (!card) return;
+        if (card.trace) setChosen(card.trace);
+        setReveal({ cardId: card.id, at: request.at });
+      }),
+    [cards, threadRef.threadId],
+  );
 
   const traces = canvas?.traces ?? [];
   const agentTrace = canvas?.currentTrace ?? traces.at(-1)?.id ?? null;
@@ -85,6 +118,8 @@ export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedT
       environmentId={threadRef.environmentId}
       canvas={shown}
       picker={picker}
+      styleOf={styleOf}
+      reveal={reveal}
     />
   );
 }

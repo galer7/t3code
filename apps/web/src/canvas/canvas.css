@@ -29,12 +29,11 @@
   background: var(--muted);
   border-top-style: dashed;
 }
-.drawout-step-lane {
-  color: var(--lane);
+.drawout-step-area {
+  color: color-mix(in oklab, var(--lane) 80%, var(--foreground));
 }
-.drawout-step-number {
+.drawout-step-area > span {
   background: var(--lane);
-  color: var(--background);
 }
 .drawout-step-column .drawout-range-gutter {
   background: var(--lane);
@@ -66,4 +65,22 @@
 }
 .drawout-mark-line {
   background: color-mix(in oklab, var(--tone) 10%, transparent);
+}
+/* A chat link to a card: the card's colour on a quiet chip. */
+.drawout-card-ref {
+  display: inline;
+  padding: 0 0.35em;
+  border-radius: 0.3em;
+  border-left: 2px solid var(--lane);
+  background: color-mix(in oklab, var(--lane) 12%, transparent);
+  color: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.drawout-card-ref:hover {
+  background: color-mix(in oklab, var(--lane) 22%, transparent);
+}
+.drawout-card-ref:disabled {
+  cursor: default;
+  opacity: 0.6;
 }

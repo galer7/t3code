@@ -9,6 +9,8 @@ import { lazy, type ReactNode, Suspense, useCallback, useEffect, useState } from
 
 import { cn } from "~/lib/utils";
 
+import { onCardReveal } from "./cardRef";
+
 const ThreadTrace = lazy(() => import("./ThreadTrace"));
 
 const WIDTH_KEY = "draw-out:chat-width";
@@ -46,6 +48,18 @@ export function ThreadWithCanvas(props: {
     setCanvasOpen(open);
     localStorage.setItem(OPEN_KEY, String(open));
   }, []);
+
+  // A card link in the chat opens the trace beside it.
+  const threadId = threadRef?.threadId ?? null;
+  useEffect(
+    () =>
+      onCardReveal((request) => {
+        if (request.threadId !== threadId) return;
+        toggleCanvas(true);
+        setNarrowView("canvas");
+      }),
+    [threadId, toggleCanvas],
+  );
 
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {

@@ -87,6 +87,8 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
+// Draw-out: links from the chat to cards in the thread's traces.
+import { CARD_REF_PROTOCOL, CardRefChip, parseCardRefHref } from "~/canvas/cardRef";
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
 import remarkGfm from "remark-gfm";
 import { remarkGithubAlerts } from "../markdown-github-alerts";
@@ -483,7 +485,13 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", "t3-citation", "t3-context"],
+    href: [
+      ...(defaultSchema.protocols?.href ?? []),
+      "file",
+      "t3-citation",
+      "t3-context",
+      CARD_REF_PROTOCOL,
+    ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
@@ -2415,7 +2423,7 @@ function useChatMarkdownState({
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
     >();
     for (const href of extractMarkdownLinkHrefs(renderCodexFileCitationsAsMarkdown(text))) {
-      if (parseComposerContextHref(href)) continue;
+      if (parseComposerContextHref(href) || parseCardRefHref(href)) continue;
       const normalizedHref = normalizeMarkdownLinkHrefKey(href);
       if (metaByHref.has(normalizedHref)) continue;
       const meta = resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd);
@@ -2446,6 +2454,7 @@ function useChatMarkdownState({
   const markdownUrlTransform = useCallback((href: string) => {
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
+    if (parseCardRefHref(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
@@ -2893,6 +2902,14 @@ const CHAT_MARKDOWN_COMPONENTS = {
     } = use(ChatMarkdownRendererContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
+    const cardRef = href ? parseCardRefHref(href) : null;
+    if (cardRef) {
+      return (
+        <CardRefChip threadRef={threadRef} cardId={cardRef}>
+          {children}
+        </CardRefChip>
+      );
+    }
     const contextReference = href ? parseComposerContextHref(href) : null;
     if (contextReference) {
       const label = hastPlainTextDeep(node) || contextReference.contextId;

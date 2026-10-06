@@ -3,8 +3,9 @@
  * side as real editors on their whole files, with the language server and
  * the agent's marks as comments above their lines. Scroll sideways to walk
  * the trace; scroll up and down in an editor to read its file. ← → move one
- * card, Cmd-scroll or + - zoom every editor, and F12 or Cmd-click opens a
- * definition as a side step right after its card; Esc closes it.
+ * card, Cmd-scroll or + - zoom every editor, Cmd-K or / searches every card,
+ * and F12 or Cmd-click opens a definition as a side step right after its
+ * card; Esc closes it.
  */
 import "./canvas.css";
 
@@ -14,13 +15,13 @@ import type {
   EnvironmentId,
   ThreadCanvasState,
 } from "@t3tools/contracts";
-import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
+import { MinusIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 
-import { LANE_STYLES } from "./laneStyles";
+import type { CardStyle } from "./areas";
 import {
   attachModel,
   lspClientFor,
@@ -52,6 +53,8 @@ type Column =
 
 /** Which column an editor shows, so go-to-definition knows where it came from. */
 const columnOfEditor = new WeakMap<monaco.editor.ICodeEditor, string>();
+/** Each column's editor, so search can open a match in it. */
+const editorOfColumn = new Map<string, monaco.editor.IStandaloneCodeEditor>();
 let openSideStep:
   | ((from: string | null, path: string, line: number, column: number) => void)
   | null = null;
@@ -84,14 +87,19 @@ export function TraceView(props: {
   readonly canvas: ThreadCanvasState;
   /** The trace list, shown in the top bar. */
   readonly picker: React.ReactNode;
+  /** A card's colour and label: its area's, else its lane's. */
+  readonly styleOf: (card: CanvasCardRecord) => CardStyle;
+  /** A card the chat asked to show. */
+  readonly reveal: { readonly cardId: string; readonly at: number } | null;
 }) {
-  const { environmentId, canvas } = props;
+  const { environmentId, canvas, styleOf } = props;
   const projectPath = useProjectPath();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const [zoom, setZoom] = useState(() => clampZoom(Number(localStorage.getItem(ZOOM_KEY)) || 1));
   const [sideSteps, setSideSteps] = useState<SideStep[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   useEffect(() => localStorage.setItem(ZOOM_KEY, String(zoom)), [zoom]);
 
   const columns = useMemo<Column[]>(() => {
@@ -135,6 +143,28 @@ export function TraceView(props: {
     };
   }, [canvas.cards, scrollToColumn]);
 
+  // Show the card a chat link asked for, once its column is there.
+  const revealAt = props.reveal?.at;
+  const revealId = props.reveal?.cardId;
+  useEffect(() => {
+    if (!revealId) return;
+    const frame = requestAnimationFrame(() => scrollToColumn(revealId));
+    return () => cancelAnimationFrame(frame);
+  }, [revealAt, revealId, scrollToColumn]);
+
+  /** Scroll to a column and select a line range in its editor. */
+  const openMatch = useCallback(
+    (key: string, range: monaco.IRange | null) => {
+      scrollToColumn(key);
+      const editor = editorOfColumn.get(key);
+      if (!editor || !range) return;
+      editor.revealRangeInCenter(range);
+      editor.setSelection(range);
+      editor.focus();
+    },
+    [scrollToColumn],
+  );
+
   const move = useCallback(
     (step: 1 | -1) => {
       const index = Math.max(
@@ -167,8 +197,21 @@ export function TraceView(props: {
 
   const onKeyDownCapture = (event: React.KeyboardEvent) => {
     if (event.altKey) return;
+    // Cmd-K is T3's command palette elsewhere; inside the trace it searches the trace.
+    if ((event.metaKey || event.ctrlKey) && (event.key === "k" || event.key === "K")) {
+      event.preventDefault();
+      event.stopPropagation();
+      setSearching(true);
+      return;
+    }
     const typing = (event.target as HTMLElement).closest("input, select, textarea") !== null;
     if (typing) return;
+    if (event.key === "/" && !event.metaKey && !event.ctrlKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      setSearching(true);
+      return;
+    }
     if (!event.metaKey && !event.ctrlKey && !event.shiftKey) {
       if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
         event.preventDefault();
@@ -231,33 +274,36 @@ export function TraceView(props: {
     <div
       ref={rootRef}
       onKeyDownCapture={onKeyDownCapture}
-      className="flex h-full min-h-0 flex-col bg-background outline-none"
+      className="relative flex h-full min-h-0 flex-col bg-background outline-none"
     >
       <div className="flex items-center gap-3 border-b border-border/60 py-2 pr-28 pl-4 text-xs">
         {props.picker}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {canvas.cards.map((card, index) => (
-            <button
-              key={card.id}
-              type="button"
-              title={card.title ?? card.path}
-              onClick={() => scrollToColumn(card.id)}
-              className={cn(
-                "flex h-6 min-w-6 shrink-0 items-center justify-center rounded px-1.5 text-xs font-semibold tabular-nums",
-                current === card.id || (!current && index === 0)
-                  ? "text-background"
-                  : "text-foreground/80 hover:bg-muted",
-              )}
-              style={
-                current === card.id || (!current && index === 0)
-                  ? { background: LANE_STYLES[card.lane].color }
-                  : { boxShadow: `inset 0 -2px 0 ${LANE_STYLES[card.lane].color}` }
-              }
-            >
-              {index + 1}
-            </button>
-          ))}
+        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-1">
+          {canvas.cards.map((card) => {
+            const active = currentColumn.key === card.id;
+            return (
+              <button
+                key={card.id}
+                type="button"
+                title={card.title ?? card.path}
+                aria-label={card.title ?? card.path}
+                onClick={() => scrollToColumn(card.id)}
+                className="group flex h-4 shrink-0 items-center px-0.5"
+              >
+                <span
+                  className={cn(
+                    "block h-1 w-5 rounded-full transition-all",
+                    active ? "h-1.5 w-7" : "opacity-45 group-hover:opacity-90",
+                  )}
+                  style={{ background: styleOf(card).color }}
+                />
+              </button>
+            );
+          })}
         </div>
+        <ToolButton label="Search the trace (Cmd-K or /)" onClick={() => setSearching(true)}>
+          <SearchIcon className="size-3.5" />
+        </ToolButton>
         <div className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5">
           <ToolButton
             label="Smaller (-)"
@@ -285,6 +331,8 @@ export function TraceView(props: {
             key={column.key}
             column={column}
             index={column.kind === "card" ? canvas.cards.indexOf(column.card) + 1 : null}
+            count={canvas.cards.length}
+            cardStyle={column.kind === "card" ? styleOf(column.card) : null}
             last={index === columns.length - 1}
             environmentId={environmentId}
             width={width}
@@ -301,6 +349,197 @@ export function TraceView(props: {
           />
         ))}
       </div>
+      {searching ? (
+        <TraceSearch
+          columns={columns}
+          styleOf={styleOf}
+          onOpen={(key, range) => {
+            setSearching(false);
+            openMatch(key, range);
+          }}
+          onClose={() => setSearching(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface SearchResult {
+  readonly key: string;
+  readonly columnKey: string;
+  readonly title: string;
+  readonly color: string;
+  readonly detail: string;
+  readonly range: monaco.IRange | null;
+}
+
+const columnTitle = (column: Column) =>
+  column.kind === "card"
+    ? (column.card.title ?? column.card.path.split("/").pop() ?? column.card.path)
+    : (column.step.path.split("/").pop() ?? column.step.path);
+
+/** Cards by title or path, then lines in every card's file. */
+function searchColumns(
+  columns: readonly Column[],
+  styleOf: (card: CanvasCardRecord) => CardStyle,
+  query: string,
+): SearchResult[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return columns.map((column) => ({
+      key: column.key,
+      columnKey: column.key,
+      title: columnTitle(column),
+      color: column.kind === "card" ? styleOf(column.card).color : "var(--muted-foreground)",
+      detail: column.kind === "card" ? (column.card.caption ?? "") : "Side step",
+      range: null,
+    }));
+  }
+  const cards: SearchResult[] = [];
+  const lines: SearchResult[] = [];
+  const searchedPaths = new Set<string>();
+  for (const column of columns) {
+    const path = column.kind === "card" ? column.card.path : column.step.path;
+    const color = column.kind === "card" ? styleOf(column.card).color : "var(--muted-foreground)";
+    const title = columnTitle(column);
+    if (`${title} ${path}`.toLowerCase().includes(needle)) {
+      cards.push({
+        key: `card:${column.key}`,
+        columnKey: column.key,
+        title,
+        color,
+        detail: path,
+        range: null,
+      });
+    }
+    // A file in several cards is searched once; a match goes to the card whose range holds it.
+    if (searchedPaths.has(path)) continue;
+    searchedPaths.add(path);
+    const model = monaco.editor.getModel(monaco.Uri.file(path));
+    if (!model) continue;
+    const owners = columns.filter(
+      (other) => (other.kind === "card" ? other.card.path : other.step.path) === path,
+    );
+    for (const match of model.findMatches(query.trim(), false, false, false, null, false, 40)) {
+      const line = match.range.startLineNumber;
+      const owner =
+        owners.find(
+          (other) =>
+            other.kind === "card" && other.card.startLine <= line && line <= other.card.endLine,
+        ) ?? owners[0]!;
+      // One result per line, at its first match.
+      if (
+        lines.some(
+          (other) => other.columnKey === owner.key && other.range?.startLineNumber === line,
+        )
+      ) {
+        continue;
+      }
+      lines.push({
+        key: `line:${owner.key}:${line}`,
+        columnKey: owner.key,
+        title: `${columnTitle(owner)}:${line}`,
+        color: owner.kind === "card" ? styleOf(owner.card).color : "var(--muted-foreground)",
+        detail: model.getLineContent(line).trim().slice(0, 160),
+        range: match.range,
+      });
+    }
+  }
+  return [...cards, ...lines].slice(0, 200);
+}
+
+function TraceSearch(props: {
+  readonly columns: readonly Column[];
+  readonly styleOf: (card: CanvasCardRecord) => CardStyle;
+  readonly onOpen: (columnKey: string, range: monaco.IRange | null) => void;
+  readonly onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const results = useMemo(
+    () => searchColumns(props.columns, props.styleOf, query),
+    [props.columns, props.styleOf, query],
+  );
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => setActive(0), [query]);
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      props.onClose();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActive((index) => Math.min(results.length - 1, Math.max(0, index + step)));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const result = results[active];
+      if (result) props.onOpen(result.columnKey, result.range);
+    }
+  };
+
+  return (
+    <div
+      className="absolute inset-0 z-30 flex justify-center bg-background/40 pt-14"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) props.onClose();
+      }}
+    >
+      <div
+        className="flex max-h-[70%] w-[min(640px,92%)] flex-col overflow-hidden rounded-lg border border-border bg-popover shadow-2xl"
+        onKeyDown={onKeyDown}
+      >
+        <div className="flex items-center gap-2 border-b border-border/70 px-3">
+          <SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search card titles, paths and code in this trace"
+            className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+        <div ref={listRef} className="min-h-0 overflow-y-auto py-1">
+          {results.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted-foreground">Nothing matches.</p>
+          ) : (
+            results.map((result, index) => (
+              <button
+                key={result.key}
+                type="button"
+                data-index={index}
+                onPointerMove={() => setActive(index)}
+                onClick={() => props.onOpen(result.columnKey, result.range)}
+                className={cn(
+                  "flex w-full items-baseline gap-2.5 px-3 py-1.5 text-left",
+                  index === active && "bg-accent",
+                )}
+              >
+                <span
+                  className="size-2 shrink-0 translate-y-[-1px] rounded-full"
+                  style={{ background: result.color }}
+                />
+                <span className="shrink-0 text-sm font-medium">{result.title}</span>
+                <span
+                  className={cn(
+                    "min-w-0 truncate text-xs text-muted-foreground",
+                    result.range && "font-mono",
+                  )}
+                >
+                  {result.detail}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -308,6 +547,8 @@ export function TraceView(props: {
 function StepColumn(props: {
   readonly column: Column;
   readonly index: number | null;
+  readonly count: number;
+  readonly cardStyle: CardStyle | null;
   readonly last: boolean;
   readonly environmentId: EnvironmentId;
   readonly width: number;
@@ -320,7 +561,7 @@ function StepColumn(props: {
 }) {
   const { column } = props;
   const card = column.kind === "card" ? column.card : null;
-  const lane = card ? LANE_STYLES[card.lane] : null;
+  const lane = props.cardStyle;
   const path = card ? card.path : column.kind === "side" ? column.step.path : "";
   const shownPath = card
     ? `${props.projectPath(card.path, card.repo)}:${card.startLine}–${card.endLine}`
@@ -344,18 +585,15 @@ function StepColumn(props: {
       }
     >
       <div className="drawout-step-column-header shrink-0 px-4 pt-2.5 pb-2">
-        <div className="flex items-center gap-2">
-          {props.index !== null ? (
-            <span className="drawout-step-number shrink-0 rounded px-1.5 text-sm font-bold tabular-nums">
-              {props.index}
-            </span>
-          ) : null}
-          <span className="drawout-step-lane shrink-0 text-xs font-bold tracking-wider uppercase">
-            {lane ? lane.label : "Side step"}
-          </span>
+        <div className="flex items-baseline gap-2">
           <h3 className="min-w-0 flex-1 truncate text-base font-semibold">
             {card ? (card.title ?? card.path.split("/").pop()) : path.split("/").pop()}
           </h3>
+          {props.index !== null ? (
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+              {props.index} of {props.count}
+            </span>
+          ) : null}
           {props.onClose ? (
             <button
               type="button"
@@ -368,11 +606,17 @@ function StepColumn(props: {
             </button>
           ) : null}
         </div>
-        <div
-          className="mt-0.5 truncate font-mono text-sm font-medium text-foreground/85"
-          style={{ direction: "rtl", textAlign: "left" }}
-        >
-          <bdi>{shownPath}</bdi>
+        <div className="mt-0.5 flex items-center gap-2 text-sm">
+          <span className="drawout-step-area flex shrink-0 items-center gap-1.5 font-medium">
+            <span className="size-2 rounded-full" />
+            {lane ? lane.label : "Side step"}
+          </span>
+          <span
+            className="min-w-0 truncate font-mono font-medium text-foreground/85"
+            style={{ direction: "rtl", textAlign: "left" }}
+          >
+            <bdi>{shownPath}</bdi>
+          </span>
         </div>
         {card?.caption ? (
           <p className="mt-1 line-clamp-3 text-sm leading-5 text-foreground/80">{card.caption}</p>
@@ -481,9 +725,11 @@ function ColumnEditor(props: {
       scrollbar: { alwaysConsumeMouseWheel: false, horizontal: "hidden" },
     });
     columnOfEditor.set(editor, props.columnKey);
+    editorOfColumn.set(props.columnKey, editor);
     editorRef.current = editor;
     decorationsRef.current = editor.createDecorationsCollection();
     return () => {
+      if (editorOfColumn.get(props.columnKey) === editor) editorOfColumn.delete(props.columnKey);
       editor.dispose();
       editorRef.current = null;
     };

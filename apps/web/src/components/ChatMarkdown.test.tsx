@@ -930,3 +930,33 @@ describe("ChatMarkdown Windows file links", () => {
     expect(html).not.toContain("chat-markdown-file-link");
   });
 });
+
+// Draw-out: a `t3-card:` link shows as a chip that opens the card in the trace.
+describe("ChatMarkdown card links", () => {
+  it("renders a t3-card link as a card chip, not a web link", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd={undefined}
+            text="See [UploadsController#create](t3-card:c3)."
+            threadRef={{
+              environmentId: EnvironmentId.make("env"),
+              threadId: "thread" as never,
+            }}
+          />,
+        );
+      });
+      const chips = renderer!.root.findAll((node) => node.props.className === "drawout-card-ref");
+      expect(chips.map((chip) => chip.props.children)).toHaveLength(1);
+      expect(renderer!.root.findAllByType("a")).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+});

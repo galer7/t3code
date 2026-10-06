@@ -1,12 +1,18 @@
 /**
- * Draw-out: the step view. One step of the agent's trace fills the zone, as a
- * real editor on the whole file with the language server. ← → walk the flow,
- * ↑ ↓ switch branches, F12 or Cmd-click opens a definition as a side step,
- * Esc goes back from a side step or shows the map, F is fullscreen.
+ * Draw-out: the step view. One card of a trace fills the zone, as a real
+ * editor on the whole file with the language server, and the agent's marks
+ * show as comments above their lines. ← → walk the trace, F12 or Cmd-click
+ * opens a definition as a side step, Esc goes back from a side step or shows
+ * the gallery, F is fullscreen.
  */
 import "./canvas.css";
 
-import type { CanvasCardRecord, EnvironmentId, ThreadCanvasState } from "@t3tools/contracts";
+import type {
+  CanvasCardRecord,
+  CanvasMarkRecord,
+  EnvironmentId,
+  ThreadCanvasState,
+} from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon, MaximizeIcon, WorkflowIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -72,6 +78,8 @@ export function TraceView(props: {
   readonly environmentId: EnvironmentId;
   readonly canvas: ThreadCanvasState;
   readonly focusCardId: string | null;
+  /** The trace list, shown in the bottom bar. */
+  readonly picker: React.ReactNode;
   readonly onOverview: () => void;
   readonly onCardChange: (cardId: string) => void;
 }) {
@@ -190,6 +198,7 @@ export function TraceView(props: {
   }
 
   const incoming = canvas.arrows.filter((arrow) => arrow.to === card.id);
+  const nextCard = cardsById.get(columns[column + 1]?.[0] ?? "") ?? null;
   const lane = LANE_STYLES[card.lane];
   return (
     <div
@@ -246,17 +255,35 @@ export function TraceView(props: {
           )}
         </div>
       </div>
-      <StepEditor environmentId={environmentId} card={card} sideStep={sideStep} />
+      <StepEditor
+        environmentId={environmentId}
+        card={card}
+        sideStep={sideStep}
+        marks={(canvas.marks ?? []).filter((mark) => mark.cardId === card.id)}
+      />
       <StepStrip
         columns={columns}
         cardsById={cardsById}
         current={{ column, row }}
+        leading={props.picker}
         onSelect={(next) => {
           setSideSteps([]);
           setPlace(next);
           zoneRef.current?.focus();
         }}
       >
+        {nextCard ? (
+          <button
+            type="button"
+            onClick={() => move("right")}
+            className="flex max-w-56 shrink-0 items-center gap-1 truncate text-2xs text-muted-foreground hover:text-foreground"
+          >
+            <span className="truncate">
+              Next: {nextCard.title ?? nextCard.path.split("/").pop()}
+            </span>
+            <ChevronRightIcon className="size-3 shrink-0" />
+          </button>
+        ) : null}
         <LspChip environmentId={environmentId} path={sideStep?.path ?? card.path} />
         <StripButton label="Previous step (←)" onClick={() => move("left")}>
           <ChevronLeftIcon className="size-4" />
@@ -264,7 +291,7 @@ export function TraceView(props: {
         <StripButton label="Next step (→)" onClick={() => move("right")}>
           <ChevronRightIcon className="size-4" />
         </StripButton>
-        <StripButton label="Map (Esc)" onClick={onOverview}>
+        <StripButton label="Gallery (Esc)" onClick={onOverview}>
           <WorkflowIcon className="size-4" />
         </StripButton>
         <StripButton
@@ -282,8 +309,13 @@ export function StepEditor(props: {
   readonly environmentId: EnvironmentId;
   readonly card: CanvasCardRecord;
   readonly sideStep: SideStep | null;
+  readonly marks?: readonly CanvasMarkRecord[];
 }) {
   const { environmentId, card, sideStep } = props;
+  const marks = props.marks ?? [];
+  // The marks' contents, so a new canvas revision with the same marks changes nothing.
+  const marksKey = JSON.stringify(marks);
+  const zoneIdsRef = useRef<string[]>([]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const decorationsRef = useRef<monaco.editor.IEditorDecorationsCollection | null>(null);
@@ -344,6 +376,7 @@ export function StepEditor(props: {
       attachModel(environmentId, model);
       editor.setModel(model);
       if (sideStep) {
+        showMarkZones(editor, zoneIdsRef, []);
         decorationsRef.current?.set([
           {
             range: new monaco.Range(sideStep.line, 1, sideStep.line, 1),
@@ -357,6 +390,7 @@ export function StepEditor(props: {
         editor.revealLineInCenter(sideStep.line);
         editor.setPosition({ lineNumber: sideStep.line, column: sideStep.column });
       } else {
+        const shown: CanvasMarkRecord[] = JSON.parse(marksKey);
         decorationsRef.current?.set([
           {
             range: new monaco.Range(card.startLine, 1, card.endLine, 1),
@@ -366,7 +400,16 @@ export function StepEditor(props: {
               linesDecorationsClassName: "drawout-range-gutter",
             },
           },
+          ...shown.map((mark) => ({
+            range: new monaco.Range(mark.startLine, 1, mark.endLine, 1),
+            options: {
+              isWholeLine: true,
+              className: `drawout-mark-line drawout-mark-${mark.tone}`,
+              hoverMessage: { value: mark.text },
+            },
+          })),
         ]);
+        showMarkZones(editor, zoneIdsRef, shown);
         editor.setScrollTop(
           Math.max(0, editor.getTopForLineNumber(card.startLine) - 3 * CODE_LINE_HEIGHT),
         );
@@ -376,7 +419,7 @@ export function StepEditor(props: {
     return () => {
       cancelled = true;
     };
-  }, [card.endLine, card.startLine, environmentId, path, sideStep]);
+  }, [card.endLine, card.startLine, environmentId, marksKey, path, sideStep]);
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -388,6 +431,40 @@ export function StepEditor(props: {
       ) : null}
     </div>
   );
+}
+
+export /** A comment's opening for the file's language. */
+function commentPrefix(languageId: string): string {
+  return ["ruby", "python", "shell", "yaml", "dockerfile", "perl", "r", "coffeescript"].includes(
+    languageId,
+  )
+    ? "#"
+    : "//";
+}
+
+/** Each mark as a comment line above its first line, in the tone's colour. */
+function showMarkZones(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  zoneIdsRef: React.MutableRefObject<string[]>,
+  marks: readonly CanvasMarkRecord[],
+) {
+  const prefix = commentPrefix(editor.getModel()?.getLanguageId() ?? "");
+  const width = editor.getLayoutInfo().contentWidth;
+  const charsPerLine = Math.max(40, Math.floor(width / 7.8) - 4);
+  editor.changeViewZones((accessor) => {
+    for (const id of zoneIdsRef.current) accessor.removeZone(id);
+    zoneIdsRef.current = marks.map((mark) => {
+      const domNode = document.createElement("div");
+      domNode.className = `drawout-mark-zone drawout-mark-${mark.tone}`;
+      domNode.textContent = `${prefix} ${mark.text}`;
+      const lines = Math.ceil((mark.text.length + prefix.length + 1) / charsPerLine);
+      return accessor.addZone({
+        afterLineNumber: mark.startLine - 1,
+        heightInPx: lines * CODE_LINE_HEIGHT + 6,
+        domNode,
+      });
+    });
+  });
 }
 
 export function LspChip({
@@ -458,11 +535,13 @@ function StepStrip(props: {
   readonly cardsById: ReadonlyMap<string, CanvasCardRecord>;
   readonly current: { readonly column: number; readonly row: number };
   readonly onSelect: (place: { column: number; row: number }) => void;
+  readonly leading?: React.ReactNode;
   readonly children: React.ReactNode;
 }) {
   const { columns, cardsById, current, onSelect, children } = props;
   return (
     <div className="flex items-center gap-3 border-t border-border/60 px-5 py-2">
+      {props.leading}
       <div className="flex min-w-0 flex-1 items-start gap-1.5 overflow-x-auto">
         {columns.map((column, columnIndex) => (
           <div key={column.join(",")} className="flex flex-col gap-1">
@@ -493,7 +572,7 @@ function StepStrip(props: {
         ))}
       </div>
       <span className="hidden shrink-0 text-[11px] text-muted-foreground xl:inline">
-        ← → steps · ↑ ↓ branches · Cmd-click definition · Esc back
+        ← → steps · Cmd-click definition · Esc gallery
       </span>
       {children}
     </div>

@@ -1,30 +1,30 @@
 /**
- * Draw-out: where each editor sits on the map. The map is columns of
+ * Draw-out: where each editor sits on the gallery. The gallery is columns of
  * editors that fill its width, with no space anywhere: every column ends at
  * the same height, so editors in shorter columns stretch and show more of
  * their file.
  *
- * With no arrangement from the user, the map picks the columns itself: as
+ * With no arrangement from the user, the gallery picks the columns itself: as
  * many as fit at the zoom, the editors in order down each column, split so
  * the tallest column is as short as it can be. Once the user drops an editor
  * somewhere, their columns stay, and the zoom only scales them.
  */
-export interface MapItem {
+export interface GalleryItem {
   readonly id: string;
   /** The editor's own height, before it stretches to fill its column. */
   readonly height: number;
 }
 
-export interface MapRect {
+export interface GalleryRect {
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
 }
 
-export interface MapLayout {
+export interface GalleryLayout {
   readonly columns: readonly (readonly string[])[];
-  readonly rects: ReadonlyMap<string, MapRect>;
+  readonly rects: ReadonlyMap<string, GalleryRect>;
   /** Each column's left edge and width. */
   readonly columnRects: readonly { readonly x: number; readonly width: number }[];
   readonly width: number;
@@ -35,7 +35,7 @@ export interface MapLayout {
  * Split the items, in order, into `count` columns so the tallest column is
  * as short as it can be.
  */
-export function autoColumns(items: readonly MapItem[], count: number): string[][] {
+export function autoColumns(items: readonly GalleryItem[], count: number): string[][] {
   const n = items.length;
   const k = Math.max(1, Math.min(count, n));
   if (n === 0) return [];
@@ -77,14 +77,14 @@ export function layoutColumns(
   heights: ReadonlyMap<string, number>,
   weights: readonly number[],
   width: number,
-): MapLayout {
+): GalleryLayout {
   const totals = columns.map((column) =>
     column.reduce((total, id) => total + (heights.get(id) ?? 0), 0),
   );
   const height = Math.max(0, ...totals);
   const weightOf = (index: number) => weights[index] ?? 1;
   const weightSum = columns.reduce((total, _column, index) => total + weightOf(index), 0);
-  const rects = new Map<string, MapRect>();
+  const rects = new Map<string, GalleryRect>();
   const columnRects: { x: number; width: number }[] = [];
   let left = 0;
   columns.forEach((column, index) => {
@@ -107,7 +107,7 @@ export function layoutColumns(
   return { columns, rects, columnRects, width, height };
 }
 
-export type MapDrop =
+export type GalleryDrop =
   | { readonly kind: "column"; readonly index: number }
   | { readonly kind: "editor"; readonly column: number; readonly index: number };
 
@@ -115,7 +115,13 @@ export type MapDrop =
  * Where a dragged editor would land for a pointer at (x, y): a new column
  * when the pointer is near a column's side, else a place in that column.
  */
-export function dropAt(layout: MapLayout, id: string, x: number, y: number, edge: number): MapDrop {
+export function dropAt(
+  layout: GalleryLayout,
+  id: string,
+  x: number,
+  y: number,
+  edge: number,
+): GalleryDrop {
   const columnIndex = Math.max(
     0,
     layout.columnRects.findLastIndex((column) => x >= column.x),
@@ -138,7 +144,7 @@ export function applyDrop(
   columns: readonly (readonly string[])[],
   weights: readonly number[],
   id: string,
-  drop: MapDrop,
+  drop: GalleryDrop,
 ): { columns: string[][]; weights: number[] } {
   let next = columns.map((column) => column.filter((other) => other !== id));
   let nextWeights = columns.map((_column, index) => weights[index] ?? 1);

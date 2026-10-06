@@ -17,6 +17,12 @@ export const CanvasHostConnectionId = TrimmedNonEmptyString.check(Schema.isMaxLe
 export type CanvasHostConnectionId = typeof CanvasHostConnectionId.Type;
 export const CanvasCardId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type CanvasCardId = typeof CanvasCardId.Type;
+export const CanvasTraceId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type CanvasTraceId = typeof CanvasTraceId.Type;
+
+/** How a mark reads: something the agent found, a claim to check, or plain context. */
+export const CanvasMarkTone = Schema.Literals(["finding", "claim", "info"]);
+export type CanvasMarkTone = typeof CanvasMarkTone.Type;
 
 export const CanvasHost = Schema.Struct({
   clientId: CanvasHostClientId,
@@ -41,22 +47,30 @@ export const CanvasShowCodeCommand = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
   /** One sentence on why this code matters to the question. */
   caption: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))),
-  /** Place the card next to this card, which it follows in the flow. */
-  after: Schema.optional(CanvasCardId),
+  /** The trace the card joins. Default: the current trace. */
+  trace: Schema.optional(CanvasTraceId),
 });
 export type CanvasShowCodeCommand = typeof CanvasShowCodeCommand.Type;
 
-/** Draw an arrow from one card to another: the flow goes from `from` to `to`. */
-export const CanvasConnectCommand = Schema.Struct({
-  type: Schema.Literal("connect"),
-  from: CanvasCardId,
-  to: CanvasCardId,
-  /** What happens along the arrow, such as `POST /uploads` or `enqueues`. */
-  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))),
+/** Start a new trace; it becomes the current trace. */
+export const CanvasStartTraceCommand = Schema.Struct({
+  type: Schema.Literal("startTrace"),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
 });
-export type CanvasConnectCommand = typeof CanvasConnectCommand.Type;
+export type CanvasStartTraceCommand = typeof CanvasStartTraceCommand.Type;
 
-/** Remove every card and arrow from the thread's canvas. */
+/** A note on lines of a card's file. */
+export const CanvasMarkCommand = Schema.Struct({
+  type: Schema.Literal("mark"),
+  cardId: CanvasCardId,
+  startLine: PositiveInt,
+  endLine: Schema.optional(PositiveInt),
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(600)),
+  tone: Schema.optional(CanvasMarkTone),
+});
+export type CanvasMarkCommand = typeof CanvasMarkCommand.Type;
+
+/** Remove every card from the current trace. */
 export const CanvasClearCommand = Schema.Struct({
   type: Schema.Literal("clear"),
 });
@@ -64,20 +78,27 @@ export type CanvasClearCommand = typeof CanvasClearCommand.Type;
 
 export const CanvasCommand = Schema.Union([
   CanvasShowCodeCommand,
-  CanvasConnectCommand,
+  CanvasStartTraceCommand,
+  CanvasMarkCommand,
   CanvasClearCommand,
 ]);
 export type CanvasCommand = typeof CanvasCommand.Type;
 
 export const CanvasShowCodeResult = Schema.Struct({
   cardId: CanvasCardId,
+  traceId: CanvasTraceId,
 });
 export type CanvasShowCodeResult = typeof CanvasShowCodeResult.Type;
 
-export const CanvasConnectResult = Schema.Struct({
-  arrowId: TrimmedNonEmptyString,
+export const CanvasStartTraceResult = Schema.Struct({
+  traceId: CanvasTraceId,
 });
-export type CanvasConnectResult = typeof CanvasConnectResult.Type;
+export type CanvasStartTraceResult = typeof CanvasStartTraceResult.Type;
+
+export const CanvasMarkResult = Schema.Struct({
+  markId: TrimmedNonEmptyString,
+});
+export type CanvasMarkResult = typeof CanvasMarkResult.Type;
 
 export const CanvasClearResult = Schema.Struct({
   removedCards: Schema.Int,
@@ -132,8 +153,26 @@ export const CanvasCardRecord = Schema.Struct({
   caption: Schema.NullOr(Schema.String),
   /** The card this one follows in the flow. */
   after: Schema.NullOr(CanvasCardId),
+  /** The trace the card belongs to. */
+  trace: Schema.optional(CanvasTraceId),
 });
 export type CanvasCardRecord = typeof CanvasCardRecord.Type;
+
+export const CanvasTraceRecord = Schema.Struct({
+  id: CanvasTraceId,
+  title: Schema.String,
+});
+export type CanvasTraceRecord = typeof CanvasTraceRecord.Type;
+
+export const CanvasMarkRecord = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  cardId: CanvasCardId,
+  startLine: PositiveInt,
+  endLine: PositiveInt,
+  text: Schema.String,
+  tone: CanvasMarkTone,
+});
+export type CanvasMarkRecord = typeof CanvasMarkRecord.Type;
 
 export const CanvasArrowRecord = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -155,6 +194,13 @@ export const ThreadCanvasState = Schema.Struct({
   nextCard: Schema.Int,
   nextArrow: Schema.Int,
   revision: Schema.Int,
+  /** The thread's traces, oldest first. A canvas saved before traces has none. */
+  traces: Schema.optional(Schema.Array(CanvasTraceRecord)),
+  /** The trace the agent's cards join. */
+  currentTrace: Schema.optional(Schema.NullOr(CanvasTraceId)),
+  marks: Schema.optional(Schema.Array(CanvasMarkRecord)),
+  nextTrace: Schema.optional(Schema.Int),
+  nextMark: Schema.optional(Schema.Int),
 });
 export type ThreadCanvasState = typeof ThreadCanvasState.Type;
 

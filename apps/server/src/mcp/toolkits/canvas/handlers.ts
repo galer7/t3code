@@ -1,4 +1,9 @@
-import { CanvasClearResult, CanvasConnectResult, CanvasShowCodeResult } from "@t3tools/contracts";
+import {
+  CanvasClearResult,
+  CanvasMarkResult,
+  CanvasShowCodeResult,
+  CanvasStartTraceResult,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -15,7 +20,8 @@ import {
 } from "./tools.ts";
 
 const isShowCodeResult = Schema.is(CanvasShowCodeResult);
-const isConnectResult = Schema.is(CanvasConnectResult);
+const isStartTraceResult = Schema.is(CanvasStartTraceResult);
+const isMarkResult = Schema.is(CanvasMarkResult);
 const isClearResult = Schema.is(CanvasClearResult);
 
 const make = Effect.gen(function* () {
@@ -40,7 +46,7 @@ const make = Effect.gen(function* () {
   });
 
   return CanvasToolkit.of({
-    canvas_show_code: ({ path, startLine, endLine, lane, title, caption, after }) =>
+    trace_show_code: ({ path, startLine, endLine, lane, title, caption, trace }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         if (endLine < startLine) {
@@ -67,28 +73,37 @@ const make = Effect.gen(function* () {
           ...(lane === undefined ? {} : { lane }),
           ...(title === undefined ? {} : { title }),
           ...(caption === undefined ? {} : { caption }),
-          ...(after === undefined ? {} : { after }),
+          ...(trace === undefined ? {} : { trace }),
         });
-        if (!isShowCodeResult(result)) return yield* Effect.die("canvas_show_code: no card id");
-        return { cardId: result.cardId };
+        if (!isShowCodeResult(result)) return yield* Effect.die("trace_show_code: no card id");
+        return { cardId: result.cardId, traceId: result.traceId };
       }),
-    canvas_connect: ({ from, to, label }) =>
+    trace_start: ({ title }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
+        const result = yield* store.apply(scope.threadId, { type: "startTrace", title });
+        if (!isStartTraceResult(result)) return yield* Effect.die("trace_start: no trace id");
+        return { traceId: result.traceId };
+      }),
+    trace_mark: ({ cardId, startLine, endLine, text, tone }) =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         const result = yield* store.apply(scope.threadId, {
-          type: "connect",
-          from,
-          to,
-          ...(label === undefined ? {} : { label }),
+          type: "mark",
+          cardId,
+          startLine,
+          text,
+          ...(endLine === undefined ? {} : { endLine }),
+          ...(tone === undefined ? {} : { tone }),
         });
-        if (!isConnectResult(result)) return yield* Effect.die("canvas_connect: no arrow id");
-        return { arrowId: result.arrowId };
+        if (!isMarkResult(result)) return yield* Effect.die("trace_mark: no mark id");
+        return { markId: result.markId };
       }),
-    canvas_clear: () =>
+    trace_clear: () =>
       Effect.gen(function* () {
         const scope = yield* McpInvocationContext.requireMcpCapability("canvas");
         const result = yield* store.apply(scope.threadId, { type: "clear" });
-        if (!isClearResult(result)) return yield* Effect.die("canvas_clear: no count");
+        if (!isClearResult(result)) return yield* Effect.die("trace_clear: no count");
         return { removedCards: result.removedCards };
       }),
   });

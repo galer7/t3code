@@ -1,8 +1,8 @@
 /**
- * Draw-out canvas prototype: the server owns each thread's canvas. The agent's
- * `canvas_*` tools change it directly, so they work with no window open, and
- * every window subscribes to it. Each canvas is one JSON file in the state
- * directory.
+ * Draw-out canvas prototype: the server owns each thread's traces. The agent's
+ * `trace_*` tools change them directly, so they work with no window open, and
+ * every window subscribes. A thread's traces, cards and marks are one JSON
+ * file in the state directory.
  */
 import {
   type CanvasCommand,
@@ -32,9 +32,19 @@ export class CanvasCardNotFoundError extends Schema.TaggedError<CanvasCardNotFou
   }
 }
 
+export class CanvasTraceNotFoundError extends Schema.TaggedError<CanvasTraceNotFoundError>()(
+  "CanvasTraceNotFoundError",
+  { traceId: Schema.String, known: Schema.String },
+) {
+  override get message(): string {
+    return `No trace ${this.traceId} in this thread. Trace ids: ${this.known}.`;
+  }
+}
+
 export type CanvasCommandResult =
-  | { readonly cardId: string }
-  | { readonly arrowId: string }
+  | { readonly cardId: string; readonly traceId: string }
+  | { readonly traceId: string }
+  | { readonly markId: string }
   | { readonly removedCards: number };
 
 export class CanvasStore extends Context.Service<
@@ -47,7 +57,7 @@ export class CanvasStore extends Context.Service<
     readonly apply: (
       threadId: ThreadId,
       command: CanvasCommand,
-    ) => Effect.Effect<CanvasCommandResult, CanvasCardNotFoundError>;
+    ) => Effect.Effect<CanvasCommandResult, CanvasCardNotFoundError | CanvasTraceNotFoundError>;
     /** Applies a change the user made. An edit of a missing card does nothing. */
     readonly edit: (threadId: ThreadId, edit: CanvasEdit) => Effect.Effect<ThreadCanvasState>;
   }
@@ -61,7 +71,42 @@ const emptyCanvas = (threadId: ThreadId): ThreadCanvasState => ({
   nextCard: 1,
   nextArrow: 1,
   revision: 0,
+  traces: [],
+  currentTrace: null,
+  marks: [],
+  nextTrace: 1,
+  nextMark: 1,
 });
+
+/** A canvas with every trace field set. Cards saved before traces join one trace. */
+const normalize = (canvas: ThreadCanvasState): ThreadCanvasState => {
+  const loose = canvas.cards.some((card) => card.trace === undefined);
+  const traces = [...(canvas.traces ?? [])];
+  let nextTrace = canvas.nextTrace ?? traces.length + 1;
+  let currentTrace = canvas.currentTrace ?? traces.at(-1)?.id ?? null;
+  let cards = canvas.cards;
+  if (loose) {
+    const id = `t${nextTrace}`;
+    nextTrace += 1;
+    traces.unshift({ id, title: "Trace 1" });
+    currentTrace ??= id;
+    cards = cards.map((card) => (card.trace === undefined ? { ...card, trace: id } : card));
+  }
+  return {
+    ...canvas,
+    cards,
+    traces,
+    currentTrace,
+    marks: canvas.marks ?? [],
+    nextTrace,
+    nextMark: canvas.nextMark ?? 1,
+  };
+};
+
+const traceIds = (canvas: ThreadCanvasState) =>
+  (canvas.traces ?? []).length === 0
+    ? "none yet"
+    : (canvas.traces ?? []).map((trace) => trace.id).join(", ");
 
 const cardIds = (canvas: ThreadCanvasState) =>
   canvas.cards.length === 0 ? "none yet" : canvas.cards.map((card) => card.id).join(", ");
@@ -75,19 +120,36 @@ const requireCard = (canvas: ThreadCanvasState, cardId: string) =>
 const applyCommand = (
   canvas: ThreadCanvasState,
   command: CanvasCommand,
-): Effect.Effect<readonly [CanvasCommandResult, ThreadCanvasState], CanvasCardNotFoundError> =>
+): Effect.Effect<
+  readonly [CanvasCommandResult, ThreadCanvasState],
+  CanvasCardNotFoundError | CanvasTraceNotFoundError
+> =>
   Effect.gen(function* () {
     switch (command.type) {
       case "showCode": {
-        if (command.after !== undefined) yield* requireCard(canvas, command.after);
-        const same = canvas.cards.find(
+        let next = canvas;
+        let traceId = command.trace ?? canvas.currentTrace ?? null;
+        if (traceId !== null && !(canvas.traces ?? []).some((trace) => trace.id === traceId)) {
+          return yield* new CanvasTraceNotFoundError({ traceId, known: traceIds(canvas) });
+        }
+        if (traceId === null) {
+          // The first card of a thread starts its first trace.
+          traceId = `t${canvas.nextTrace ?? 1}`;
+          next = {
+            ...canvas,
+            traces: [...(canvas.traces ?? []), { id: traceId, title: "Trace 1" }],
+            nextTrace: (canvas.nextTrace ?? 1) + 1,
+          };
+        }
+        const same = next.cards.find(
           (card) =>
+            card.trace === traceId &&
             card.path === command.path &&
             card.startLine === command.startLine &&
             card.endLine === command.endLine,
         );
         if (same) {
-          const cards = canvas.cards.map((card) =>
+          const cards = next.cards.map((card) =>
             card.id === same.id
               ? {
                   ...card,
@@ -96,9 +158,12 @@ const applyCommand = (
                 }
               : card,
           );
-          return [{ cardId: same.id }, { ...canvas, cards }] as const;
+          return [
+            { cardId: same.id, traceId },
+            { ...next, cards, currentTrace: traceId },
+          ] as const;
         }
-        const id = `c${canvas.nextCard}`;
+        const id = `c${next.nextCard}`;
         const card = {
           id,
           path: command.path,
@@ -107,37 +172,63 @@ const applyCommand = (
           lane: command.lane ?? "backend",
           title: command.title ?? null,
           caption: command.caption ?? null,
-          after: command.after ?? null,
+          after: null,
+          trace: traceId,
         };
         return [
-          { cardId: id },
-          { ...canvas, cards: [...canvas.cards, card], nextCard: canvas.nextCard + 1 },
+          { cardId: id, traceId },
+          {
+            ...next,
+            cards: [...next.cards, card],
+            nextCard: next.nextCard + 1,
+            currentTrace: traceId,
+          },
         ] as const;
       }
-      case "connect": {
-        yield* requireCard(canvas, command.from);
-        yield* requireCard(canvas, command.to);
-        const same = canvas.arrows.find(
-          (arrow) => arrow.from === command.from && arrow.to === command.to,
-        );
-        if (same) {
-          const arrows = canvas.arrows.map((arrow) =>
-            arrow.id === same.id ? { ...arrow, label: command.label ?? arrow.label } : arrow,
-          );
-          return [{ arrowId: same.id }, { ...canvas, arrows }] as const;
-        }
-        const id = `a${canvas.nextArrow}`;
-        const arrow = { id, from: command.from, to: command.to, label: command.label ?? null };
+      case "startTrace": {
+        const id = `t${canvas.nextTrace ?? 1}`;
         return [
-          { arrowId: id },
-          { ...canvas, arrows: [...canvas.arrows, arrow], nextArrow: canvas.nextArrow + 1 },
+          { traceId: id },
+          {
+            ...canvas,
+            traces: [...(canvas.traces ?? []), { id, title: command.title }],
+            currentTrace: id,
+            nextTrace: (canvas.nextTrace ?? 1) + 1,
+          },
         ] as const;
       }
-      case "clear":
+      case "mark": {
+        yield* requireCard(canvas, command.cardId);
+        const id = `m${canvas.nextMark ?? 1}`;
+        const mark = {
+          id,
+          cardId: command.cardId,
+          startLine: command.startLine,
+          endLine: Math.max(command.startLine, command.endLine ?? command.startLine),
+          text: command.text,
+          tone: command.tone ?? "info",
+        };
         return [
-          { removedCards: canvas.cards.length },
-          { ...canvas, cards: [], arrows: [], pinned: {} },
+          { markId: id },
+          {
+            ...canvas,
+            marks: [...(canvas.marks ?? []), mark],
+            nextMark: (canvas.nextMark ?? 1) + 1,
+          },
         ] as const;
+      }
+      case "clear": {
+        const removed = canvas.cards.filter((card) => card.trace === canvas.currentTrace);
+        const gone = new Set(removed.map((card) => card.id));
+        return [
+          { removedCards: removed.length },
+          {
+            ...canvas,
+            cards: canvas.cards.filter((card) => !gone.has(card.id)),
+            marks: (canvas.marks ?? []).filter((mark) => !gone.has(mark.cardId)),
+          },
+        ] as const;
+      }
     }
   });
 
@@ -184,6 +275,7 @@ export const make = Effect.gen(function* () {
   const load = (threadId: ThreadId) =>
     fs.readFileString(fileOf(threadId)).pipe(
       Effect.flatMap(decodeCanvas),
+      Effect.map(normalize),
       Effect.orElseSucceed(() => emptyCanvas(threadId)),
     );
 

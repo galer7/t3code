@@ -1,5 +1,5 @@
 /**
- * Draw-out: the canvas tools at their boundary. A test calls a `canvas_*` tool
+ * Draw-out: the canvas tools at their boundary. A test calls a `trace_*` tool
  * over HTTP with a thread's MCP token, as the agent does, and reads the
  * thread's canvas from the server's canvas store, as a window does.
  */
@@ -144,7 +144,7 @@ it.effect("shows code as one card on the calling thread's canvas and returns its
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      const result = yield* callTool(token, "canvas_show_code", {
+      const result = yield* callTool(token, "trace_show_code", {
         path: "app/controllers/uploads_controller.rb",
         startLine: 4,
         endLine: 18,
@@ -157,7 +157,7 @@ it.effect("shows code as one card on the calling thread's canvas and returns its
         cards: (yield* canvasOf(threadA)).cards,
         otherThread: (yield* canvasOf(threadB)).cards,
       }).toEqual({
-        result: { cardId: "c1" },
+        result: { cardId: "c1", traceId: "t1" },
         cards: [
           {
             id: "c1",
@@ -168,6 +168,7 @@ it.effect("shows code as one card on the calling thread's canvas and returns its
             title: "UploadsController#create",
             caption: "Attaches the file to the record.",
             after: null,
+            trace: "t1",
           },
         ],
         otherThread: [],
@@ -182,13 +183,13 @@ it.effect("keeps the lane the agent gives, and refuses a lane that does not exis
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      yield* callTool(token, "canvas_show_code", {
+      yield* callTool(token, "trace_show_code", {
         path: "zoom.ts",
         startLine: 1,
         endLine: 9,
         lane: "external",
       });
-      const unknown = yield* callTool(token, "canvas_show_code", {
+      const unknown = yield* callTool(token, "trace_show_code", {
         path: "cancel.ts",
         startLine: 1,
         endLine: 9,
@@ -204,42 +205,82 @@ it.effect("keeps the lane the agent gives, and refuses a lane that does not exis
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("draws an arrow between two cards, and names the cards when one is missing", () =>
+it.effect("starts traces, adds cards to the current one, and marks lines of a card", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      yield* callTool(token, "canvas_show_code", {
-        path: "upload.ts",
-        startLine: 1,
-        endLine: 20,
-        lane: "frontend",
-      });
-      yield* callTool(token, "canvas_show_code", {
-        path: "uploads_controller.rb",
+      yield* callTool(token, "trace_show_code", { path: "upload.ts", startLine: 1, endLine: 20 });
+      const started = yield* callTool(token, "trace_start", { title: "Zoom cancel webhook" });
+      const second = yield* callTool(token, "trace_show_code", {
+        path: "zoom.ts",
         startLine: 4,
         endLine: 18,
-        after: "c1",
       });
-      const connected = yield* callTool(token, "canvas_connect", {
-        from: "c1",
-        to: "c2",
-        label: "POST /uploads",
+      const older = yield* callTool(token, "trace_show_code", {
+        path: "api.ts",
+        startLine: 1,
+        endLine: 3,
+        trace: "t1",
       });
-      const missing = yield* callTool(token, "canvas_connect", { from: "c1", to: "c9" });
+      const marked = yield* callTool(token, "trace_mark", {
+        cardId: "c2",
+        startLine: 7,
+        text: "One webhook per attendee.",
+        tone: "finding",
+      });
+      const missing = yield* callTool(token, "trace_mark", {
+        cardId: "c9",
+        startLine: 1,
+        text: "x",
+      });
+      const unknownTrace = yield* callTool(token, "trace_show_code", {
+        path: "b.ts",
+        startLine: 1,
+        endLine: 2,
+        trace: "t7",
+      });
 
       const canvas = yield* canvasOf(threadA);
       expect({
-        connected: connected.structuredContent,
-        after: canvas.cards[1]?.after,
-        arrows: canvas.arrows,
-        missing: { isError: missing.isError, text: missing.content[0]?.text },
+        started: started.structuredContent,
+        second: second.structuredContent,
+        older: older.structuredContent,
+        marked: marked.structuredContent,
+        traces: canvas.traces,
+        current: canvas.currentTrace,
+        cards: canvas.cards.map((card) => [card.id, card.trace]),
+        marks: canvas.marks,
+        missing: missing.content[0]?.text,
+        unknownTrace: unknownTrace.content[0]?.text,
       }).toEqual({
-        connected: { arrowId: "a1" },
-        after: "c1",
-        arrows: [{ id: "a1", from: "c1", to: "c2", label: "POST /uploads" }],
-        missing: { isError: true, text: "No card c9 on this canvas. Card ids: c1, c2." },
+        started: { traceId: "t2" },
+        second: { cardId: "c2", traceId: "t2" },
+        older: { cardId: "c3", traceId: "t1" },
+        marked: { markId: "m1" },
+        traces: [
+          { id: "t1", title: "Trace 1" },
+          { id: "t2", title: "Zoom cancel webhook" },
+        ],
+        current: "t1",
+        cards: [
+          ["c1", "t1"],
+          ["c2", "t2"],
+          ["c3", "t1"],
+        ],
+        marks: [
+          {
+            id: "m1",
+            cardId: "c2",
+            startLine: 7,
+            endLine: 7,
+            text: "One webhook per attendee.",
+            tone: "finding",
+          },
+        ],
+        missing: "No card c9 on this canvas. Card ids: c1, c2, c3.",
+        unknownTrace: "No trace t7 in this thread. Trace ids: t1, t2.",
       });
     }),
   ).pipe(Effect.provide(TestLayer)),
@@ -251,8 +292,8 @@ it.effect("shows a range once: showing it again returns the same card", () =>
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 5 });
-      const again = yield* callTool(token, "canvas_show_code", {
+      yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 5 });
+      const again = yield* callTool(token, "trace_show_code", {
         path: "a.rb",
         startLine: 1,
         endLine: 5,
@@ -264,22 +305,22 @@ it.effect("shows a range once: showing it again returns the same card", () =>
         again: again.structuredContent,
         titles: canvas.cards.map((card) => card.title),
       }).toEqual({
-        again: { cardId: "c1" },
+        again: { cardId: "c1", traceId: "t1" },
         titles: ["A"],
       });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("clears the calling thread's canvas and says how many cards it removed", () =>
+it.effect("clears the current trace and says how many cards it removed", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
-      yield* callTool(token, "canvas_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
-      const cleared = yield* callTool(token, "canvas_clear", {});
+      yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+      yield* callTool(token, "trace_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
+      const cleared = yield* callTool(token, "trace_clear", {});
 
       expect({
         cleared: cleared.structuredContent,
@@ -298,7 +339,7 @@ it.effect("keeps an absolute path as it is", () =>
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      yield* callTool(token, "canvas_show_code", {
+      yield* callTool(token, "trace_show_code", {
         path: "/srv/other/lib/x.ts",
         startLine: 3,
         endLine: 4,
@@ -315,7 +356,7 @@ it.effect("rejects a range that ends before it starts", () =>
       yield* serveMcp;
       const token = yield* issueToken(threadA);
 
-      const result = yield* callTool(token, "canvas_show_code", {
+      const result = yield* callTool(token, "trace_show_code", {
         path: "a.rb",
         startLine: 9,
         endLine: 2,
@@ -336,23 +377,16 @@ it.effect("pins, removes and keeps the user's edits on the canvas", () =>
       const token = yield* issueToken(threadA);
       const store = yield* CanvasStore.CanvasStore;
 
-      yield* callTool(token, "canvas_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
-      yield* callTool(token, "canvas_show_code", {
-        path: "b.rb",
-        startLine: 1,
-        endLine: 2,
-        after: "c1",
-      });
-      yield* callTool(token, "canvas_connect", { from: "c1", to: "c2" });
+      yield* callTool(token, "trace_show_code", { path: "a.rb", startLine: 1, endLine: 2 });
+      yield* callTool(token, "trace_show_code", { path: "b.rb", startLine: 1, endLine: 2 });
       yield* store.edit(threadA, { type: "pin", cardId: "c2", x: 40, y: 900 });
       yield* store.edit(threadA, { type: "remove", cardId: "c1" });
 
       const canvas = yield* canvasOf(threadA);
       expect({
-        cards: canvas.cards.map((card) => [card.id, card.after]),
-        arrows: canvas.arrows,
+        cards: canvas.cards.map((card) => card.id),
         pinned: canvas.pinned,
-      }).toEqual({ cards: [["c2", null]], arrows: [], pinned: { c2: { x: 40, y: 900 } } });
+      }).toEqual({ cards: ["c2"], pinned: { c2: { x: 40, y: 900 } } });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

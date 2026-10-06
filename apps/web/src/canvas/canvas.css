@@ -15,47 +15,56 @@
 .drawout-step-editor .cursors-layer {
   visibility: hidden;
 }
-/* The map: a raised editor comes forward. */
-@keyframes drawout-raise {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-}
-@keyframes drawout-fade {
-  from {
-    opacity: 0;
-  }
-}
-.drawout-raise {
-  animation: drawout-raise 160ms ease-out;
-}
-.drawout-raise-backdrop {
-  animation: drawout-fade 160ms ease-out;
-}
-/* The map: each editor wears its lane's colour. */
-.drawout-map-tile {
+/* The gallery: each editor wears its lane's colour. */
+.drawout-gallery-tile {
   background: color-mix(in oklab, var(--lane) 6%, var(--background));
   border-color: color-mix(in oklab, var(--lane) 45%, var(--border));
 }
-.drawout-map-tile-selected {
+.drawout-gallery-tile-selected {
   outline: 2px solid var(--lane);
   outline-offset: -2px;
 }
-.drawout-map-tile-header {
+.drawout-gallery-tile-header {
   background: color-mix(in oklab, var(--lane) 22%, var(--background));
   border-bottom: 1px solid color-mix(in oklab, var(--lane) 40%, transparent);
 }
-.drawout-map-tile-lane {
+.drawout-gallery-tile-lane {
   color: var(--lane);
   letter-spacing: 0.08em;
 }
-.drawout-map-tile .drawout-range-gutter {
+.drawout-gallery-tile .drawout-range-gutter {
   background: var(--lane);
 }
-.drawout-map-tile .drawout-step-range {
+.drawout-gallery-tile .drawout-step-range {
   background: color-mix(in oklab, var(--lane) 10%, transparent);
 }
-.drawout-map-divider:hover {
+.drawout-gallery-divider:hover {
   background: color-mix(in oklab, var(--primary) 45%, transparent);
+}
+/* The step view: the agent's marks, as comments above their lines. */
+.drawout-mark-zone {
+  --tone: var(--muted-foreground);
+  box-sizing: border-box;
+  padding: 3px 12px 3px 10px;
+  border-left: 2px solid var(--tone);
+  background: color-mix(in oklab, var(--tone) 8%, transparent);
+  color: color-mix(in oklab, var(--tone) 85%, var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+.drawout-mark-finding {
+  --tone: #f59e0b;
+}
+.drawout-mark-claim {
+  --tone: #60a5fa;
+}
+.drawout-mark-info {
+  --tone: #a1a1aa;
+}
+.drawout-mark-line {
+  background: color-mix(in oklab, var(--tone) 10%, transparent);
 }

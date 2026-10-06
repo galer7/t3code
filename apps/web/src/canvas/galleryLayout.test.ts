@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { applyDrop, autoColumns, dropAt, layoutColumns, type MapItem } from "./mapLayout";
+import { applyDrop, autoColumns, dropAt, layoutColumns, type GalleryItem } from "./galleryLayout";
 
-const item = (id: string, height: number): MapItem => ({ id, height });
+const item = (id: string, height: number): GalleryItem => ({ id, height });
 
 describe("autoColumns", () => {
   it("keeps the order down each column and makes the tallest column short", () => {

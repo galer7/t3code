@@ -1,13 +1,16 @@
 /**
- * Draw-out: the `canvas_*` tools. Each call changes the canvas of the thread
- * that holds the MCP token. The server owns the canvas; windows subscribe to it.
+ * Draw-out: the `trace_*` tools. Each call changes the traces of the thread
+ * that holds the MCP token. The server owns them; windows subscribe.
  */
 import {
   CanvasCardId,
   CanvasClearResult,
-  CanvasConnectResult,
   CanvasLane,
+  CanvasMarkResult,
+  CanvasMarkTone,
   CanvasShowCodeResult,
+  CanvasStartTraceResult,
+  CanvasTraceId,
   McpCapabilityUnavailableError,
   PositiveInt,
   TrimmedNonEmptyString,
@@ -38,7 +41,7 @@ export const CanvasShowCodeInput = Schema.Struct({
   lane: Schema.optional(
     CanvasLane.annotate({
       description:
-        "The layer the code belongs to; the canvas shows lanes left to right: frontend, backend, infra, then external (a third-party service such as Zoom or Stripe, or the code that calls it). Default: backend.",
+        "The layer the code belongs to, which sets the card's colour: frontend, backend, infra, or external (a third-party service such as Zoom or Stripe, or the code that calls it). Default: backend.",
     }),
   ),
   title: Schema.optional(
@@ -52,26 +55,41 @@ export const CanvasShowCodeInput = Schema.Struct({
       description: "One short sentence on why this code matters to the question.",
     }),
   ),
-  after: Schema.optional(
-    CanvasCardId.annotate({
+  trace: Schema.optional(
+    CanvasTraceId.annotate({
       description:
-        "The id of a card this code follows in the flow. The canvas places the new card beside it.",
+        "The trace the card joins, by the id trace_start or trace_show_code returned. Default: the current trace, which is the one you last started or added to.",
     }),
   ),
 });
 export type CanvasShowCodeInput = typeof CanvasShowCodeInput.Type;
 
-export const CanvasConnectInput = Schema.Struct({
-  from: CanvasCardId.annotate({ description: "The card the flow starts from." }),
-  to: CanvasCardId.annotate({ description: "The card the flow goes to." }),
-  label: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(60)).annotate({
+export const CanvasStartTraceInput = Schema.Struct({
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
+    description:
+      "What the trace shows, in a few words, such as `Checkout payment` or `Zoom cancel webhook`.",
+  }),
+});
+export type CanvasStartTraceInput = typeof CanvasStartTraceInput.Type;
+
+export const CanvasMarkInput = Schema.Struct({
+  cardId: CanvasCardId.annotate({ description: "The card whose file the mark is on." }),
+  startLine: PositiveInt.annotate({ description: "First line of the mark, 1-based, in the file." }),
+  endLine: Schema.optional(
+    PositiveInt.annotate({ description: "Last line of the mark, inclusive. Default: startLine." }),
+  ),
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(600)).annotate({
+    description:
+      "The note, in one or two short sentences. It shows as a comment above the lines, with the full text on hover.",
+  }),
+  tone: Schema.optional(
+    CanvasMarkTone.annotate({
       description:
-        "What happens along the arrow, in 1 to 4 words, such as `POST /uploads`, `enqueues`, `reads`, `webhook`.",
+        "finding: something you found, such as a bug or the cause; claim: something you believe but did not prove; info: context. Default: info.",
     }),
   ),
 });
-export type CanvasConnectInput = typeof CanvasConnectInput.Type;
+export type CanvasMarkInput = typeof CanvasMarkInput.Type;
 
 export class CanvasRangeInvalidError extends Schema.TaggedError<CanvasRangeInvalidError>()(
   "CanvasRangeInvalidError",
@@ -106,49 +124,69 @@ export const CanvasToolError = Schema.Union([
   CanvasThreadNotFoundError,
   CanvasThreadLookupError,
   CanvasStore.CanvasCardNotFoundError,
+  CanvasStore.CanvasTraceNotFoundError,
 ]);
 export type CanvasToolError = typeof CanvasToolError.Type;
 
-export const CanvasShowCodeTool = Tool.make("canvas_show_code", {
+export const CanvasShowCodeTool = Tool.make("trace_show_code", {
   description:
-    "Show a range of code as a card on this thread's canvas in Draw-out, so the user sees the code you talk about. Use it when you read or explain code the user should look at. Returns the card id.",
+    "Show a range of code as a card in a trace beside this thread's chat, so the user sees the code you talk about. Cards show in the order you add them. Returns the card id and its trace id.",
   parameters: CanvasShowCodeInput,
   success: CanvasShowCodeResult,
   failure: CanvasToolError,
   dependencies,
 })
-  .annotate(Tool.Title, "Show code on the canvas")
+  .annotate(Tool.Title, "Show code in a trace")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasConnectTool = Tool.make("canvas_connect", {
+export const CanvasStartTraceTool = Tool.make("trace_start", {
   description:
-    "Draw an arrow between two cards on this thread's canvas, so the user sees how the code flows: a call, a request, a job, an event, a read or write. Use the card ids canvas_show_code returned.",
-  parameters: CanvasConnectInput,
-  success: CanvasConnectResult,
+    "Start a new trace in this thread; it becomes the current trace, and the user sees it. Start one when the conversation moves to code that does not continue the current trace, or when the user asks. Returns the trace id.",
+  parameters: CanvasStartTraceInput,
+  success: CanvasStartTraceResult,
   failure: CanvasToolError,
   dependencies,
 })
-  .annotate(Tool.Title, "Connect two cards on the canvas")
+  .annotate(Tool.Title, "Start a trace")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasClearTool = Tool.make("canvas_clear", {
+export const CanvasMarkTool = Tool.make("trace_mark", {
   description:
-    "Remove every card and arrow from this thread's canvas. Use it only when the user asks for a fresh canvas.",
+    "Put a note on lines of a card's file: why a line matters, what it calls, a finding. The user sees it as a comment above the lines. Returns the mark id.",
+  parameters: CanvasMarkInput,
+  success: CanvasMarkResult,
+  failure: CanvasToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Mark lines in a trace")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const CanvasClearTool = Tool.make("trace_clear", {
+  description:
+    "Remove every card from the current trace. Use it only when the user asks for a fresh trace.",
   parameters: Tool.EmptyParams,
   success: CanvasClearResult,
   failure: CanvasToolError,
   dependencies,
 })
-  .annotate(Tool.Title, "Clear the canvas")
+  .annotate(Tool.Title, "Clear the current trace")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const CanvasToolkit = Toolkit.make(CanvasShowCodeTool, CanvasConnectTool, CanvasClearTool);
+export const CanvasToolkit = Toolkit.make(
+  CanvasShowCodeTool,
+  CanvasStartTraceTool,
+  CanvasMarkTool,
+  CanvasClearTool,
+);

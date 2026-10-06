@@ -2,7 +2,7 @@
  * Draw-out: the step view. One step of the agent's trace fills the zone, as a
  * real editor on the whole file with the language server. ← → walk the flow,
  * ↑ ↓ switch branches, F12 or Cmd-click opens a definition as a side step,
- * Esc goes back from a side step or shows the overview, F is fullscreen.
+ * Esc goes back from a side step or shows the map, F is fullscreen.
  */
 import "./canvas.css";
 
@@ -32,7 +32,7 @@ import {
 import { useProjectPath } from "./projectPath";
 import { stepAcross, traceColumns } from "./traceSteps";
 
-interface SideStep {
+export interface SideStep {
   readonly path: string;
   readonly line: number;
   readonly column: number;
@@ -41,6 +41,14 @@ interface SideStep {
 /** Where the step view sends go-to-definition: the mounted step view's handler. */
 let openSideStep: ((step: SideStep) => void) | null = null;
 let openerRegistered = false;
+
+/** Send go-to-definition to `handler` until the returned cleanup runs. */
+export function setSideStepHandler(handler: (step: SideStep) => void): () => void {
+  openSideStep = handler;
+  return () => {
+    if (openSideStep === handler) openSideStep = null;
+  };
+}
 
 function registerOpener() {
   if (openerRegistered) return;
@@ -122,12 +130,7 @@ export function TraceView(props: {
     [canvas, columns, sideSteps.length],
   );
 
-  useEffect(() => {
-    openSideStep = (step) => setSideSteps((steps) => [...steps, step]);
-    return () => {
-      openSideStep = null;
-    };
-  }, []);
+  useEffect(() => setSideStepHandler((step) => setSideSteps((steps) => [...steps, step])), []);
 
   const onKeyDownCapture = useCallback(
     (event: React.KeyboardEvent) => {
@@ -261,7 +264,7 @@ export function TraceView(props: {
         <StripButton label="Next step (→)" onClick={() => move("right")}>
           <ChevronRightIcon className="size-4" />
         </StripButton>
-        <StripButton label="Overview (Esc)" onClick={onOverview}>
+        <StripButton label="Map (Esc)" onClick={onOverview}>
           <WorkflowIcon className="size-4" />
         </StripButton>
         <StripButton
@@ -275,7 +278,7 @@ export function TraceView(props: {
   );
 }
 
-function StepEditor(props: {
+export function StepEditor(props: {
   readonly environmentId: EnvironmentId;
   readonly card: CanvasCardRecord;
   readonly sideStep: SideStep | null;
@@ -387,7 +390,7 @@ function StepEditor(props: {
   );
 }
 
-function LspChip({
+export function LspChip({
   environmentId,
   path,
 }: {

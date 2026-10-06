@@ -15,3 +15,21 @@
 .drawout-step-editor .cursors-layer {
   visibility: hidden;
 }
+/* The map: a raised editor comes forward. */
+@keyframes drawout-raise {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+@keyframes drawout-fade {
+  from {
+    opacity: 0;
+  }
+}
+.drawout-raise {
+  animation: drawout-raise 160ms ease-out;
+}
+.drawout-raise-backdrop {
+  animation: drawout-fade 160ms ease-out;
+}

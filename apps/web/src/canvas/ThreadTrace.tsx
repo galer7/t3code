@@ -1,6 +1,6 @@
 /**
- * Draw-out: a thread's trace. The step view by default; Esc shows the
- * overview, a sequence diagram of the steps, and a click there opens a step.
+ * Draw-out: a thread's trace. The map by default; the step view walks the
+ * same cards one at a time, and Esc there goes back to the map.
  */
 import { useAtomValue } from "@effect/atom-react";
 import type { ScopedThreadRef, ThreadCanvasState } from "@t3tools/contracts";
@@ -9,7 +9,7 @@ import { useCallback, useState } from "react";
 
 import { canvasEnvironment } from "~/state/canvas";
 
-import { SequenceView } from "./SequenceView";
+import { MapView } from "./MapView";
 import { TraceView } from "./TraceView";
 
 export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
@@ -19,24 +19,20 @@ export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedT
       input: { threadId: threadRef.threadId },
     }),
   );
-  const [mode, setMode] = useState<"steps" | "overview">("steps");
+  const [mode, setMode] = useState<"map" | "steps">("map");
   const [focusCardId, setFocusCardId] = useState<string | null>(null);
-  const [currentCardId, setCurrentCardId] = useState<string | null>(null);
-  const onCardChange = useCallback((cardId: string) => setCurrentCardId(cardId), []);
+  const onCardChange = useCallback(() => {}, []);
   const canvas: ThreadCanvasState | null = AsyncResult.isSuccess(result) ? result.value : null;
 
   if (!canvas) return <div className="h-full bg-background" />;
-  if (mode === "overview") {
+  if (mode === "map") {
     return (
-      <SequenceView
+      <MapView
+        key={threadRef.threadId}
+        environmentId={threadRef.environmentId}
         canvas={canvas}
-        currentCardId={currentCardId}
-        onOpen={(cardId) => {
+        onSteps={(cardId) => {
           setFocusCardId(cardId);
-          setMode("steps");
-        }}
-        onBack={() => {
-          setFocusCardId(currentCardId);
           setMode("steps");
         }}
       />
@@ -47,7 +43,7 @@ export default function ThreadTrace({ threadRef }: { readonly threadRef: ScopedT
       environmentId={threadRef.environmentId}
       canvas={canvas}
       focusCardId={focusCardId}
-      onOverview={() => setMode("overview")}
+      onOverview={() => setMode("map")}
       onCardChange={onCardChange}
     />
   );

@@ -117,6 +117,7 @@ import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3Orchestrati
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import { mcpToolPresentation, normalizeMcpText } from "../../provider/McpToolPresentation.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { type EditorBridgeServer, readEditorBridgeServers } from "../../mcp/EditorBridges.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { makeProviderFailure, makeProviderRetryTurnItem } from "../ProviderFailure.ts";
 import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
@@ -962,32 +963,60 @@ export const CLAUDE_T3_MCP_TOOL_TIMEOUT_MS = 65 * 60 * 1_000;
 // not pre-approved), but read-only sandboxes pre-approve only the annotated
 // read-only orchestrator tools so a read-only session cannot silently spawn
 // threads or scheduled tasks.
+//
+// Editor bridges attach with or without a t3-code session. Their tools are
+// pre-approved outside read-only sandboxes.
 export function claudeMcpQueryOverrides(input: {
   readonly threadId: ThreadId;
   readonly readOnlySandbox: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
+  readonly editorBridges?: ReadonlyArray<EditorBridgeServer>;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
 } {
   const session = McpProviderSession.readMcpProviderSession(input.threadId);
-  if (session === undefined) {
+  const editorBridges = input.editorBridges ?? [];
+  if (session === undefined && editorBridges.length === 0) {
     return input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools };
   }
-  const mcpAllowedTools = input.readOnlySandbox
-    ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
-    : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const mcpAllowedTools =
+    session === undefined
+      ? []
+      : input.readOnlySandbox
+        ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
+        : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const editorBridgeAllowedTools = input.readOnlySandbox
+    ? []
+    : editorBridges.map((bridge) => `mcp__${bridge.name}__*`);
+  const allowedTools = [
+    ...(input.allowedTools ?? []),
+    ...mcpAllowedTools,
+    ...editorBridgeAllowedTools,
+  ];
   return {
-    allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
+    ...(input.allowedTools === undefined && allowedTools.length === 0
+      ? {}
+      : { allowedTools: Array.from(new Set(allowedTools)) }),
     mcpServers: {
-      "t3-code": {
-        type: "http",
-        url: session.endpoint,
-        headers: {
-          Authorization: session.authorizationHeader,
-        },
-        timeout: CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
-      },
+      ...Object.fromEntries(
+        editorBridges.map((bridge) => [
+          bridge.name,
+          { type: "http" as const, url: bridge.url, headers: { ...bridge.headers } },
+        ]),
+      ),
+      ...(session === undefined
+        ? {}
+        : {
+            "t3-code": {
+              type: "http" as const,
+              url: session.endpoint,
+              headers: {
+                Authorization: session.authorizationHeader,
+              },
+              timeout: CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
+            },
+          }),
     },
   };
 }
@@ -3001,6 +3030,8 @@ export interface ClaudeAdapterV2Options {
   readonly settings: ClaudeSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly attachmentsDir: string;
+  /** T3 home that holds `editor-bridges/`; no editor bridges attach when unset. */
+  readonly editorBridgesBaseDir?: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
   readonly crypto: Crypto.Crypto;
@@ -7043,8 +7074,17 @@ export function makeClaudeAdapterV2(
           nativeThreadId: string,
         ) {
           const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
+          const editorBridges =
+            adapterOptions.editorBridgesBaseDir === undefined
+              ? []
+              : yield* readEditorBridgeServers({
+                  baseDir: adapterOptions.editorBridgesBaseDir,
+                  cwd: turnInput.runtimePolicy.cwd,
+                  threadId: turnInput.threadId,
+                });
           const mcpOverrides = claudeMcpQueryOverrides({
             threadId: turnInput.threadId,
+            editorBridges,
             readOnlySandbox:
               sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
             ...(queryPolicy.allowedTools === undefined
@@ -7947,6 +7987,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       settings: { ...config, enabled, binaryPath },
       environment: claudeEnvironment,
       attachmentsDir: serverConfig.attachmentsDir,
+      editorBridgesBaseDir: serverConfig.baseDir,
       fileSystem,
       path,
       crypto,
@@ -7995,6 +8036,7 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
     settings: DEFAULT_CLAUDE_SETTINGS,
     environment: hostEnvironment,
     attachmentsDir: serverConfig.attachmentsDir,
+    editorBridgesBaseDir: serverConfig.baseDir,
     fileSystem,
     path,
     crypto,

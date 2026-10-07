@@ -519,6 +519,33 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
     assert.deepEqual(overrides, { allowedTools: ["Read"] });
   });
 
+  it("attaches editor bridges without an MCP session and keeps them unapproved when read-only", () => {
+    const threadId = ThreadId.make("thread-claude-editor-bridge");
+    const editorBridges = [
+      {
+        name: "draw-out",
+        url: "http://127.0.0.1:4100/mcp",
+        headers: { "X-T3-Thread-Id": threadId },
+      },
+    ];
+    const mcpServers = {
+      "draw-out": {
+        type: "http" as const,
+        url: "http://127.0.0.1:4100/mcp",
+        headers: { "X-T3-Thread-Id": threadId },
+      },
+    };
+
+    assert.deepEqual(
+      ClaudeAdapterV2.claudeMcpQueryOverrides({ threadId, readOnlySandbox: false, editorBridges }),
+      { allowedTools: ["mcp__draw-out__*"], mcpServers },
+    );
+    assert.deepEqual(
+      ClaudeAdapterV2.claudeMcpQueryOverrides({ threadId, readOnlySandbox: true, editorBridges }),
+      { mcpServers },
+    );
+  });
+
   it("pre-approves all t3-code tools when attaching an MCP session without an allowlist", () => {
     const threadId = ThreadId.make("thread-claude-mcp-no-allowlist");
     withMcpSession(threadId, () => {

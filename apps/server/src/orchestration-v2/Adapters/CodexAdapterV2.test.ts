@@ -655,6 +655,33 @@ describe("CodexAdapterV2 process spawning", () => {
     }
   });
 
+  it("adds editor bridges to thread-scoped params without an MCP session", () => {
+    const threadId = ThreadId.make("thread-codex-editor-bridge");
+    assert.deepEqual(
+      CodexAdapterV2.codexThreadRuntimeParams({
+        threadId,
+        editorBridges: [
+          {
+            name: "draw-out",
+            url: "http://127.0.0.1:4100/mcp",
+            headers: { "X-T3-Thread-Id": threadId },
+          },
+        ],
+      }),
+      {
+        config: {
+          "tools.update_plan.enabled": true,
+          mcp_servers: {
+            "draw-out": {
+              url: "http://127.0.0.1:4100/mcp",
+              http_headers: { "X-T3-Thread-Id": threadId },
+            },
+          },
+        },
+      },
+    );
+  });
+
   it.effect("resolves Windows command shims through the shared spawn policy", () =>
     Effect.gen(function* () {
       const command = yield* CodexAdapterV2.makeCodexAppServerSpawnCommand({

@@ -5,6 +5,8 @@
  * `<T3 home>/editor-bridges/` and removes it on exit. At session start an
  * adapter attaches the bridges whose workspace folders match the session's
  * cwd, so the editor tools exist only while the editor is running there.
+ * A session in a git worktree also matches the editor window that has the
+ * worktree's main checkout open.
  */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -15,6 +17,7 @@ import * as Schema from "effect/Schema";
 
 export const EDITOR_BRIDGES_DIRECTORY = "editor-bridges";
 export const EDITOR_BRIDGE_THREAD_HEADER = "X-T3-Thread-Id";
+export const EDITOR_BRIDGE_CWD_HEADER = "X-T3-Thread-Cwd";
 
 /** Names T3 already uses for its own MCP servers. */
 const RESERVED_NAMES = new Set(["t3-code"]);
@@ -53,6 +56,58 @@ function isWithin(child: string, parent: string): boolean {
   return child.startsWith(prefix);
 }
 
+function readTextFile(path: string): string | undefined {
+  try {
+    return NodeFS.readFileSync(path, "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Returns the main working tree when `cwd` is inside a linked git worktree,
+ * read from the `.git` file and `commondir` without running git. Returns
+ * `undefined` for a main checkout, a non-repo folder, or unreadable files.
+ */
+export function findMainWorktree(cwd: string): string | undefined {
+  let directory = NodePath.resolve(cwd);
+  while (true) {
+    const dotGit = NodePath.join(directory, ".git");
+    let stat: NodeFS.Stats | undefined;
+    try {
+      stat = NodeFS.statSync(dotGit, { throwIfNoEntry: false });
+    } catch {
+      return undefined;
+    }
+    if (stat?.isDirectory()) return undefined;
+    if (stat?.isFile()) {
+      const match = /^gitdir:\s*(.+)$/m.exec(readTextFile(dotGit) ?? "");
+      if (!match?.[1]) return undefined;
+      const gitDir = NodePath.resolve(directory, match[1].trim());
+      const commonDir = readTextFile(NodePath.join(gitDir, "commondir"));
+      if (!commonDir) return undefined;
+      const resolvedCommonDir = NodePath.resolve(gitDir, commonDir);
+      if (NodePath.basename(resolvedCommonDir) !== ".git") return undefined;
+      return NodePath.dirname(resolvedCommonDir);
+    }
+    const parent = NodePath.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+function folderMatchLength(folders: ReadonlyArray<string>, path: string): number {
+  let matchLength = -1;
+  for (const folder of folders) {
+    if (!NodePath.isAbsolute(folder)) continue;
+    const resolved = NodePath.resolve(folder);
+    if (isWithin(path, resolved) || isWithin(resolved, path)) {
+      matchLength = Math.max(matchLength, resolved.length);
+    }
+  }
+  return matchLength;
+}
+
 function isLoopbackHttpUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -67,18 +122,25 @@ function isLoopbackHttpUrl(url: string): boolean {
 
 /**
  * Picks the bridges to attach for a session running in `cwd`. A folder
- * matches when it equals `cwd`, contains it, or sits inside it. When several
- * live bridges share a name, the one with the longest matching folder wins.
+ * matches when it equals `cwd`, contains it, or sits inside it. When `cwd` is
+ * in a linked git worktree, the same rules also apply to `mainWorktree`. When
+ * several live bridges share a name, a direct match beats a worktree match,
+ * then the longest matching folder wins.
  */
 export function selectEditorBridges(input: {
   readonly candidates: ReadonlyArray<EditorBridgeCandidate>;
   readonly cwd: string;
+  /** Main working tree of the git worktree that holds `cwd`, if any. */
+  readonly mainWorktree?: string | undefined;
   readonly threadId: string;
   readonly isPidAlive: (pid: number) => boolean;
 }): { servers: ReadonlyArray<EditorBridgeServer>; rejected: ReadonlyArray<EditorBridgeRejection> } {
   const cwd = NodePath.resolve(input.cwd);
   const rejected: Array<EditorBridgeRejection> = [];
-  const best = new Map<string, { path: string; server: EditorBridgeServer; matchLength: number }>();
+  const best = new Map<
+    string,
+    { path: string; server: EditorBridgeServer; direct: boolean; matchLength: number }
+  >();
 
   for (const candidate of input.candidates) {
     const reject = (reason: string) => rejected.push({ path: candidate.path, reason });
@@ -97,13 +159,13 @@ export function selectEditorBridges(input: {
       reject("url is not http(s) on 127.0.0.1 or localhost");
       continue;
     }
-    let matchLength = -1;
-    for (const folder of bridge.workspaceFolders) {
-      if (!NodePath.isAbsolute(folder)) continue;
-      const resolved = NodePath.resolve(folder);
-      if (isWithin(cwd, resolved) || isWithin(resolved, cwd)) {
-        matchLength = Math.max(matchLength, resolved.length);
-      }
+    let matchLength = folderMatchLength(bridge.workspaceFolders, cwd);
+    const direct = matchLength >= 0;
+    if (!direct && input.mainWorktree !== undefined) {
+      matchLength = folderMatchLength(
+        bridge.workspaceFolders,
+        NodePath.resolve(input.mainWorktree),
+      );
     }
     if (matchLength < 0) {
       reject("no workspace folder matches the session cwd");
@@ -114,7 +176,10 @@ export function selectEditorBridges(input: {
       continue;
     }
     const current = best.get(name);
-    if (current && current.matchLength >= matchLength) {
+    const currentWins =
+      current !== undefined &&
+      (current.direct !== direct ? current.direct : current.matchLength >= matchLength);
+    if (currentWins) {
       reject(`a bridge named "${name}" with a closer folder match exists`);
       continue;
     }
@@ -126,11 +191,15 @@ export function selectEditorBridges(input: {
     }
     best.set(name, {
       path: candidate.path,
+      direct,
       matchLength,
       server: {
         name,
         url: bridge.url,
-        headers: { [EDITOR_BRIDGE_THREAD_HEADER]: input.threadId },
+        headers: {
+          [EDITOR_BRIDGE_THREAD_HEADER]: input.threadId,
+          [EDITOR_BRIDGE_CWD_HEADER]: cwd,
+        },
       },
     });
   }
@@ -184,6 +253,7 @@ export const readEditorBridgeServers = Effect.fn("EditorBridges.readEditorBridge
     const { servers, rejected } = selectEditorBridges({
       candidates: readCandidates(directory),
       cwd: input.cwd,
+      mainWorktree: findMainWorktree(input.cwd),
       threadId: input.threadId,
       isPidAlive,
     });

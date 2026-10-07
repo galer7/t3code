@@ -1,3 +1,4 @@
+import type { ProjectId } from "@t3tools/contracts";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 
 import {
@@ -5,9 +6,13 @@ import {
   PairingPendingSurface,
   PairingRouteSurface,
 } from "../components/auth/PairingRouteSurface";
+import { validateChatIndexSearch } from "../lib/chatIndexSearch";
 
 export const Route = createFileRoute("/pair")({
-  beforeLoad: async ({ context }) => {
+  // `project` passes through to `/` once this browser is paired. Route search
+  // also holds raw params such as `token`, so pass `project` on its own.
+  validateSearch: validateChatIndexSearch,
+  beforeLoad: async ({ context, search }) => {
     const { authGateState } = context;
     if (authGateState.status === "hosted-pairing") {
       return {
@@ -16,7 +21,7 @@ export const Route = createFileRoute("/pair")({
     }
 
     if (authGateState.status === "authenticated" || authGateState.status === "hosted-static") {
-      throw redirect({ to: "/", replace: true });
+      throw redirect({ to: "/", search: indexSearch(search.project), replace: true });
     }
     return {
       authGateState,
@@ -29,6 +34,7 @@ export const Route = createFileRoute("/pair")({
 function PairRouteView() {
   const router = useRouter();
   const { authGateState } = Route.useRouteContext();
+  const { project } = Route.useSearch();
 
   if (!authGateState) {
     return null;
@@ -44,13 +50,19 @@ function PairRouteView() {
       onAuthenticated={() => {
         // Recreate the primary connection so its WebSocket and cached scopes
         // use the newly issued cookie after re-pairing.
-        router.history.replace("/");
+        router.history.replace(
+          router.buildLocation({ to: "/", search: indexSearch(project) }).href,
+        );
         router.history.flush();
         window.location.reload();
       }}
       {...(authGateState.errorMessage ? { initialErrorMessage: authGateState.errorMessage } : {})}
     />
   );
+}
+
+function indexSearch(project: ProjectId | undefined) {
+  return project === undefined ? {} : { project };
 }
 
 function PairRoutePendingView() {

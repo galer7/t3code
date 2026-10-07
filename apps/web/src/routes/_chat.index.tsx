@@ -18,7 +18,8 @@ import {
   useProjects,
   useThreadShells,
 } from "../state/entities";
-import { useEnvironments } from "../state/environments";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { pickIndexLandingProject, validateChatIndexSearch } from "../lib/chatIndexSearch";
 import { APP_DISPLAY_NAME } from "~/branding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 
@@ -35,11 +36,14 @@ function ChatIndexRouteView() {
 }
 
 /**
- * Landing on the index route drops straight into a draft thread for the most
- * recently active project, so the first screen is a prompt instead of a dead
- * end. Falls back to an add-project hero when no project exists yet.
+ * Landing on the index route drops straight into a draft thread for the
+ * project named by `?project=` or else the most recently active project, so
+ * the first screen is a prompt instead of a dead end. Falls back to an
+ * add-project hero when no project exists yet.
  */
 function IndexDraftLanding() {
+  const { project: requestedProjectId } = Route.useSearch();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projects = useProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
@@ -47,31 +51,35 @@ function IndexDraftLanding() {
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
-  const mostRecentProject = useMemo(
+  const landingProject = useMemo(
     () =>
       bootstrapped
-        ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
+        ? pickIndexLandingProject(
+            sortScopedProjectsForSidebar(projects, threads, "updated_at"),
+            requestedProjectId,
+            primaryEnvironmentId,
+          )
         : null,
-    [bootstrapped, projects, threads],
+    [bootstrapped, primaryEnvironmentId, projects, requestedProjectId, threads],
   );
 
   useEffect(() => {
-    if (mostRecentProject === null || startingRef.current) {
+    if (landingProject === null || startingRef.current) {
       return;
     }
     startingRef.current = true;
-    void handleNewThread(scopeProjectRef(mostRecentProject.environmentId, mostRecentProject.id), {
+    void handleNewThread(scopeProjectRef(landingProject.environmentId, landingProject.id), {
       replace: true,
     }).catch(() => {
       startingRef.current = false;
       setStartState((state) => ({ ...state, failed: true }));
     });
-  }, [handleNewThread, mostRecentProject, startState.retryRequest]);
+  }, [handleNewThread, landingProject, startState.retryRequest]);
 
   if (!bootstrapped) {
     return null;
   }
-  if (mostRecentProject !== null) {
+  if (landingProject !== null) {
     return startState.failed ? (
       <DraftStartError
         onRetry={() => {
@@ -111,6 +119,7 @@ function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {
 }
 
 export const Route = createFileRoute("/_chat/")({
+  validateSearch: validateChatIndexSearch,
   component: ChatIndexRouteView,
 });
 
